@@ -1,0 +1,2 @@
+# No extra packages needed. SpotDL Companion uses only Python's standard library
+# (Tkinter is included with the normal Python installer).
