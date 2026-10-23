@@ -225,7 +225,12 @@ def build_ytdlp_command(ytdlp_cmd, artist, title, folder, duration=0):
 
     ffmpeg = find_ffmpeg()
     if ffmpeg:
-        cmd += ["--ffmpeg-location", ffmpeg, "--embed-metadata"]
+        cmd += [
+            "--ffmpeg-location", ffmpeg,
+            "--embed-metadata",
+            "--embed-thumbnail",
+            "--convert-thumbnails", "jpg",
+        ]
 
     dur = int(duration or 0)
     if dur > 0:
