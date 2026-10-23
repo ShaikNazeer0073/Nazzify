@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 
 APP_NAME = "SpotDLCompanion"
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -18,7 +19,8 @@ URL_RE = re.compile(
     r"^https?://open\.spotify\.com/(?:intl-[a-z-]+/)?(track|album|playlist|artist)/[A-Za-z0-9]+",
     re.IGNORECASE,
 )
-AD_TITLES = {"advertisement", "spotify", "spotify free"}
+AD_TITLES = {"advertisement", "spotify", "spotify free", "spotify premium"}
+AUDIO_EXTS = {".m4a", ".mp3", ".webm", ".opus", ".ogg", ".flac", ".wav"}
 
 
 # ---------- configuration ----------
@@ -52,7 +54,7 @@ def save_config(cfg):
         return False
 
 
-# ---------- locating spotDL ----------
+# ---------- locating tools (spotDL / yt-dlp / FFmpeg) ----------
 def find_spotdl(configured=""):
     """Return path to spotdl executable or None."""
     candidates = []
@@ -65,7 +67,6 @@ def find_spotdl(configured=""):
         candidates += sorted(glob.glob(os.path.join(appdata, "Python", "Python*", "Scripts", "spotdl.exe")), reverse=True)
     if local:
         candidates += sorted(glob.glob(os.path.join(local, "Programs", "Python", "Python*", "Scripts", "spotdl.exe")), reverse=True)
-    # Scripts folder next to the Python running this app
     candidates.append(os.path.join(os.path.dirname(sys.executable), "Scripts", "spotdl.exe"))
     found = shutil.which("spotdl")
     if found:
@@ -74,6 +75,58 @@ def find_spotdl(configured=""):
         if c and os.path.isfile(c):
             return c
     return None
+
+
+def find_ffmpeg():
+    """Return path to ffmpeg.exe if present at ~/.spotdl/ffmpeg.exe or on PATH."""
+    p = os.path.expanduser(os.path.join("~", ".spotdl", "ffmpeg.exe"))
+    if os.path.isfile(p):
+        return p
+    return shutil.which("ffmpeg")
+
+
+def find_ytdlp(configured_spotdl=""):
+    """
+    Return command list to execute yt-dlp:
+    1. Look for yt-dlp.exe next to spotdl.exe (or configured path)
+    2. Look in common Python Scripts locations
+    3. Look on PATH
+    4. Fallback: [python.exe, "-m", "yt_dlp"] (using python.exe if under pythonw.exe)
+    """
+    candidates = []
+    if configured_spotdl:
+        candidates.append(os.path.join(os.path.dirname(configured_spotdl), "yt-dlp.exe"))
+
+    spotdl_exe = find_spotdl(configured_spotdl)
+    if spotdl_exe:
+        candidates.append(os.path.join(os.path.dirname(spotdl_exe), "yt-dlp.exe"))
+
+    appdata = os.environ.get("APPDATA", "")
+    local = os.environ.get("LOCALAPPDATA", "")
+    if appdata:
+        candidates.append(os.path.join(appdata, "Python", "Python314", "Scripts", "yt-dlp.exe"))
+        candidates += sorted(glob.glob(os.path.join(appdata, "Python", "Python*", "Scripts", "yt-dlp.exe")), reverse=True)
+    if local:
+        candidates += sorted(glob.glob(os.path.join(local, "Programs", "Python", "Python*", "Scripts", "yt-dlp.exe")), reverse=True)
+
+    candidates.append(os.path.join(os.path.dirname(sys.executable), "Scripts", "yt-dlp.exe"))
+    found = shutil.which("yt-dlp")
+    if found:
+        candidates.append(found)
+
+    for c in candidates:
+        if c and os.path.isfile(c):
+            return [c]
+
+    # Fallback to python -m yt_dlp
+    py = sys.executable
+    if py.lower().endswith("pythonw.exe"):
+        py_cand = py[:-5] + ".exe"
+        if os.path.isfile(py_cand):
+            py = py_cand
+    elif not os.path.isfile(py):
+        py = "python.exe"
+    return [py, "-m", "yt_dlp"]
 
 
 def spotdl_version(exe):
@@ -95,47 +148,95 @@ def child_env():
     return env
 
 
-# ---------- URLs / commands ----------
-def classify_url(text):
-    """Return 'track'/'album'/'playlist'/'artist' or None."""
-    m = URL_RE.match((text or "").strip())
-    return m.group(1).lower() if m else None
-
-
-def clean_url(text):
-    return (text or "").strip().split("?")[0]
-
-
-def build_command(exe, query, folder, kind="track", fmt=None):
-    """Argument list (no shell). kind: track/search -> flat files; album/playlist -> subfolder."""
-    if kind in ("album", "playlist", "artist"):
-        template = os.path.join(folder, "{list-name}", "{artists} - {title}.{output-ext}")
-    else:
-        template = os.path.join(folder, "{artists} - {title}.{output-ext}")
-    cmd = [exe, "download", query, "--output", template]
-    if fmt == "m4a":      # YouTube Music already serves m4a: no slow re-encoding
-        cmd += ["--format", "m4a", "--bitrate", "disable"]
-    elif fmt == "mp3":
-        cmd += ["--format", "mp3"]
-    return cmd
-
-
-def looks_like_arg_error(text):
-    t = text.lower()
-    return ("unrecognized arguments" in t or "invalid choice" in t or "expected one of" in t
-            or "error: argument" in t or "usage: spotdl" in t)
-
-
+# ---------- Titles / Searching / File Naming ----------
 def clean_for_search(text):
-    """Remove quotes and bracketed extras like (From "DC"), [Remastered] that confuse YouTube Music search."""
-    text = re.sub(r"\([^)]*\)|\[[^\]]*\]", " ", text)
-    text = re.sub(r"[\"\u201c\u201d\u2018\u2019`]", "", text)
+    """Remove quotes and bracketed extras like (From "DC") or [Telugu] that confuse YouTube search."""
+    if not text:
+        return ""
+    # Iteratively remove nested or multiple pairs of (...), [...], {...}
+    prev = None
+    while prev != text:
+        prev = text
+        text = re.sub(r"\([^)]*\)|\[[^\]]*\]|\{[^}]*\}", " ", text)
+    # Remove straight and curly quotes, backticks
+    text = re.sub(r"[\"'\u201c\u201d\u2018\u2019`]", "", text)
+    # Remove trailing - From / - Feat / - With
     text = re.sub(r"\s+-\s+(from|feat\.?|with)\b.*$", "", text, flags=re.IGNORECASE)
     return re.sub(r"\s+", " ", text).strip(" -")
 
 
 def search_query(title, artist):
-    return f"{clean_for_search(artist)} - {clean_for_search(title)}".strip(" -")
+    clean_art = clean_for_search(artist)
+    clean_tit = clean_for_search(title)
+    return f"{clean_art} - {clean_tit}".strip(" -")
+
+
+def sanitize_filename(name):
+    """Remove invalid Windows filename characters: < > : " / \\ | ? * and trailing spaces/dots."""
+    name = re.sub(r'[<>:"/\\|?*]', "", name)
+    name = re.sub(r"\s+", " ", name).strip(". ")
+    return name or "track"
+
+
+def get_track_base(artist, title):
+    """Return sanitized artist - title base name."""
+    clean_art = clean_for_search(artist)
+    clean_tit = clean_for_search(title)
+    return sanitize_filename(f"{clean_art} - {clean_tit}")
+
+
+def song_file_exists(folder, artist, title):
+    """Check if an audio file for this artist/title already exists in folder."""
+    if not folder or not os.path.isdir(folder):
+        return False
+    base = get_track_base(artist, title)
+    for ext in (".m4a", ".mp3"):
+        if os.path.isfile(os.path.join(folder, f"{base}{ext}")):
+            return True
+    pattern = os.path.join(folder, glob.escape(base) + ".*")
+    for p in glob.glob(pattern):
+        ext = os.path.splitext(p)[1].lower()
+        if ext in AUDIO_EXTS:
+            return True
+    return False
+
+
+def build_ytdlp_command(ytdlp_cmd, artist, title, folder, duration=0):
+    """
+    Build yt-dlp command list:
+    - Search with ytsearch5:"<artist> - <title>"
+    - Format: bestaudio[ext=m4a]/bestaudio
+    - --max-downloads 1, --newline, --ignore-config
+    - Duration filter: duration >= X-12 & duration <= X+12 & !is_live
+    - FFmpeg location and embed metadata if available
+    """
+    query = search_query(title, artist)
+    base = get_track_base(artist, title)
+    # Escape % as %% for yt-dlp output template syntax
+    template = os.path.join(folder, f"{base.replace('%', '%%')}.%(ext)s")
+
+    cmd = list(ytdlp_cmd) + [
+        "--newline",
+        "--ignore-config",
+        "--max-downloads", "1",
+        "-f", "bestaudio[ext=m4a]/bestaudio",
+        "-o", template,
+    ]
+
+    ffmpeg = find_ffmpeg()
+    if ffmpeg:
+        cmd += ["--ffmpeg-location", ffmpeg, "--embed-metadata"]
+
+    dur = int(duration or 0)
+    if dur > 0:
+        min_d = max(0, dur - 12)
+        max_d = dur + 12
+        cmd += ["--match-filters", f"duration >= {min_d} & duration <= {max_d} & !is_live"]
+    else:
+        cmd += ["--match-filters", "!is_live"]
+
+    cmd.append(f"ytsearch5:{query}")
+    return cmd, base
 
 
 def strip_ansi(s):
@@ -153,23 +254,23 @@ def parse_progress(line):
 
 def friendly_error(output_text, returncode):
     t = output_text.lower()
+    if any(k in t for k in ("confirm you're not a bot", "sign in to confirm", "bot", "sign in")):
+        return ("YouTube asked for sign-in/bot confirmation. "
+                "Try updating yt-dlp in Command Prompt: pip install -U yt-dlp")
     if "ffmpeg" in t and ("not found" in t or "not installed" in t or "no such file" in t):
-        return ("spotDL could not find FFmpeg. Run this once in Command Prompt:  "
+        return ("FFmpeg was not found. Install FFmpeg or run: "
                 "\"%APPDATA%\\Python\\Python314\\Scripts\\spotdl.exe\" --download-ffmpeg")
     if any(k in t for k in ("connectionerror", "getaddrinfo", "timed out", "max retries", "network is unreachable")):
         return "Network problem. Check your internet connection and try again."
-    if "lookuperror" in t or "no results found" in t or "no usable results" in t:
-        return ("spotDL could not find a matching recording. Try pasting the song's Spotify link "
-                "(Spotify: right-click song > Share > Copy Song Link) into box 2.")
+    if "does not pass filter" in t and "finished downloading playlist" in t:
+        return "No YouTube recording matched the Spotify track duration within +/- 12s."
     if "ratelimit" in t or "429" in t:
-        return "Spotify/YouTube is rate-limiting requests. Wait a few minutes and retry."
-    if "invalid" in t and "url" in t:
-        return "spotDL said the link is not valid."
-    return f"spotDL finished with an error (exit code {returncode}). See the log for details."
+        return "YouTube is rate-limiting requests. Wait a few minutes and retry."
+    return f"Download ended with exit code {returncode}. See log for details."
 
 
 def run_download(cmd, on_line, holder=None):
-    """Run spotDL, streaming cleaned lines to on_line. Returns (returncode, full_text)."""
+    """Run yt-dlp subprocess, streaming cleaned lines to on_line. Returns (returncode, full_text)."""
     proc = subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
         creationflags=CREATE_NO_WINDOW, env=child_env(), shell=False,
@@ -202,11 +303,11 @@ def run_download(cmd, on_line, holder=None):
 
 # ---------- current song (Windows GSMTC via PowerShell) ----------
 def get_current_song():
-    """Returns dict: ok(bool), title, artist, status, message."""
+    """Returns dict: ok(bool), title, artist, status, duration, message."""
     if os.name != "nt":
         return {"ok": False, "message": "Song detection only works on Windows."}
     if not os.path.isfile(PS_SCRIPT):
-        return {"ok": False, "message": "Helper file get_media_info.ps1 is missing. Re-extract the ZIP."}
+        return {"ok": False, "message": "Helper file get_media_info.ps1 is missing."}
     ps = shutil.which("powershell.exe") or "powershell.exe"
     try:
         r = subprocess.run(
@@ -234,13 +335,58 @@ def interpret_media_output(stdout, stderr=""):
         return {"ok": False, "message": "No media session found. Open Spotify and play a song first."}
     spot = [d for d in data if "spotify" in str(d.get("app", "")).lower()]
     if not spot:
-        return {"ok": False, "message": "Spotify is not reporting a media session. Start playing a song in Spotify "
-                                        "(other apps' media is ignored on purpose)."}
-    spot.sort(key=lambda d: 0 if str(d.get("status", "")).lower() == "playing" else 1)
+        return {"ok": False, "message": "Spotify is not reporting a media session. Start playing a song in Spotify."}
+    def is_valid(d):
+        t = (d.get("title") or "").strip()
+        a = (d.get("artist") or "").strip()
+        return bool(t and a and t.lower() not in AD_TITLES)
+
+    # Sort to prioritize valid songs first (playing before paused), ads last
+    spot.sort(key=lambda d: (
+        0 if (is_valid(d) and str(d.get("status", "")).lower() == "playing")
+        else (1 if is_valid(d) else 2)
+    ))
     d = spot[0]
     title = (d.get("title") or "").strip()
     artist = (d.get("artist") or "").strip()
     status = str(d.get("status", "")).strip()
-    if not title or title.lower() in AD_TITLES or not artist:
+    duration = int(d.get("duration", 0) or 0)
+    if not is_valid(d):
         return {"ok": False, "message": "Spotify is showing an advertisement or no track info. Wait for the song and retry."}
-    return {"ok": True, "title": title, "artist": artist, "status": status, "message": ""}
+    return {"ok": True, "title": title, "artist": artist, "status": status, "duration": duration, "message": ""}
+
+
+def start_media_listener(on_song, on_error=None, parent_pid=None):
+    """
+    Run get_media_info.ps1 with -Loop -ParentPid in a persistent subprocess.
+    Calls on_song(dict) for each JSON line emitted.
+    Returns (proc, thread).
+    """
+    if os.name != "nt" or not os.path.isfile(PS_SCRIPT):
+        return None, None
+    ps = shutil.which("powershell.exe") or "powershell.exe"
+    pid = str(parent_pid if parent_pid is not None else os.getpid())
+    cmd = [
+        ps, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+        "-File", PS_SCRIPT, "-Loop", "-ParentPid", pid,
+    ]
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        stdin=subprocess.DEVNULL, creationflags=CREATE_NO_WINDOW,
+        text=True, encoding="utf-8", errors="replace", bufsize=1,
+    )
+
+    def reader():
+        try:
+            for line in proc.stdout:
+                line = line.strip()
+                if line:
+                    res = interpret_media_output(line)
+                    on_song(res)
+        except Exception as e:
+            if on_error:
+                on_error(e)
+
+    t = threading.Thread(target=reader, daemon=True)
+    t.start()
+    return proc, t

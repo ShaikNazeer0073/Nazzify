@@ -19,7 +19,11 @@ if exe:
     out("spotDL found: " + exe)
     out("spotDL version: " + (core.spotdl_version(exe) or "could not read version"))
 else:
-    out("spotDL: NOT FOUND (open the app and use Browse next to 'spotDL:')")
+    out("spotDL: NOT FOUND")
+ytdlp = core.find_ytdlp(cfg.get("spotdl_path", ""))
+out("yt-dlp engine: " + (" ".join(ytdlp) if ytdlp else "NOT FOUND"))
+ffmpeg = core.find_ffmpeg()
+out("FFmpeg: " + (ffmpeg if ffmpeg else "NOT FOUND"))
 spotify = os.path.join(os.environ.get("APPDATA", ""), "Spotify", "Spotify.exe")
 out("Spotify.exe at default path: " + ("yes" if os.path.isfile(spotify) else "not at default path (not required)"))
 out("Helper script present: " + str(os.path.isfile(core.PS_SCRIPT)))
