@@ -185,19 +185,85 @@ def get_track_base(artist, title):
     return sanitize_filename(f"{clean_art} - {clean_tit}")
 
 
-def song_file_exists(folder, artist, title):
-    """Check if an audio file for this artist/title already exists in folder."""
+def find_audio_file(folder, artist, title):
+    """Find the downloaded audio file on disk for this artist and title."""
     if not folder or not os.path.isdir(folder):
-        return False
+        return None
     base = get_track_base(artist, title)
     for ext in (".m4a", ".mp3"):
-        if os.path.isfile(os.path.join(folder, f"{base}{ext}")):
-            return True
+        p = os.path.join(folder, f"{base}{ext}")
+        if os.path.isfile(p):
+            return p
     pattern = os.path.join(folder, glob.escape(base) + ".*")
     for p in glob.glob(pattern):
         ext = os.path.splitext(p)[1].lower()
         if ext in AUDIO_EXTS:
+            return p
+    return None
+
+
+def song_file_exists(folder, artist, title):
+    """Check if an audio file for this artist/title already exists in folder."""
+    return find_audio_file(folder, artist, title) is not None
+
+
+def embed_spotify_cover(audio_file_path, image_path):
+    """Embed the exact Spotify cover art image into the audio file (m4a/mp3)."""
+    if not audio_file_path or not os.path.isfile(audio_file_path):
+        return False
+    if not image_path or not os.path.isfile(image_path):
+        return False
+    try:
+        with open(image_path, "rb") as f:
+            img_bytes = f.read()
+        if not img_bytes:
+            return False
+
+        ext = os.path.splitext(audio_file_path)[1].lower()
+        if ext in (".m4a", ".mp4"):
+            import mutagen.mp4
+            is_png = img_bytes.startswith(b"\x89PNG")
+            fmt = mutagen.mp4.AtomDataType.PNG if is_png else mutagen.mp4.AtomDataType.JPEG
+
+            # Windows Explorer shell thumbnailer best handles JPEG cover art in MP4 containers
+            try:
+                from PIL import Image
+                import io
+                im = Image.open(io.BytesIO(img_bytes))
+                if im.mode != "RGB":
+                    im = im.convert("RGB")
+                buf = io.BytesIO()
+                im.save(buf, format="JPEG", quality=95)
+                img_bytes = buf.getvalue()
+                fmt = mutagen.mp4.AtomDataType.JPEG
+            except Exception:
+                pass
+
+            mp4 = mutagen.mp4.MP4(audio_file_path)
+            mp4["covr"] = [mutagen.mp4.MP4Cover(img_bytes, imageformat=fmt)]
+            mp4.save()
             return True
+
+        elif ext == ".mp3":
+            import mutagen.id3
+            from mutagen.id3 import ID3, APIC
+            try:
+                tags = ID3(audio_file_path)
+            except mutagen.id3.ID3NoHeaderError:
+                tags = ID3()
+            mime = "image/png" if img_bytes.startswith(b"\x89PNG") else "image/jpeg"
+            tags.delall("APIC")
+            tags.add(APIC(
+                encoding=3,
+                mime=mime,
+                type=3,  # Front cover
+                desc="Cover",
+                data=img_bytes,
+            ))
+            tags.save(audio_file_path)
+            return True
+    except Exception as e:
+        return False
     return False
 
 
@@ -356,9 +422,18 @@ def interpret_media_output(stdout, stderr=""):
     artist = (d.get("artist") or "").strip()
     status = str(d.get("status", "")).strip()
     duration = int(d.get("duration", 0) or 0)
+    thumbnail = (d.get("thumbnail") or "").strip()
     if not is_valid(d):
         return {"ok": False, "message": "Spotify is showing an advertisement or no track info. Wait for the song and retry."}
-    return {"ok": True, "title": title, "artist": artist, "status": status, "duration": duration, "message": ""}
+    return {
+        "ok": True,
+        "title": title,
+        "artist": artist,
+        "status": status,
+        "duration": duration,
+        "thumbnail": thumbnail,
+        "message": ""
+    }
 
 
 def start_media_listener(on_song, on_error=None, parent_pid=None):

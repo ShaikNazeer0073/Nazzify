@@ -19,8 +19,38 @@ try {
     }
     $null = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager, Windows.Media.Control, ContentType = WindowsRuntime]
     $null = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionMediaProperties, Windows.Media.Control, ContentType = WindowsRuntime]
+    $null = [Windows.Storage.Streams.IRandomAccessStreamWithContentType, Windows.Storage.Streams, ContentType = WindowsRuntime]
     $mgrType = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager]
     $propType = [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionMediaProperties]
+    $streamType = [Windows.Storage.Streams.IRandomAccessStreamWithContentType]
+
+    $asStreamMethod = [System.IO.WindowsRuntimeStreamExtensions].GetMethods() | Where-Object {
+        $_.Name -eq 'AsStream' -and $_.GetParameters().Count -eq 1
+    } | Select-Object -First 1
+
+    $artFolder = Join-Path $env:TEMP 'SpotDLCompanionArt'
+    if (-not (Test-Path $artFolder)) {
+        [System.IO.Directory]::CreateDirectory($artFolder) | Out-Null
+    }
+
+    function Save-ThumbnailStream($streamRef, $filename) {
+        $destPath = Join-Path $artFolder $filename
+        if (Test-Path $destPath) {
+            return $destPath
+        }
+        try {
+            $stream = Await ($streamRef.OpenReadAsync()) $streamType
+            $netStream = $asStreamMethod.Invoke($null, @($stream))
+            $ms = New-Object System.IO.MemoryStream
+            $netStream.CopyTo($ms)
+            $bytes = $ms.ToArray()
+            if ($bytes.Length -gt 0) {
+                [System.IO.File]::WriteAllBytes($destPath, $bytes)
+                return $destPath
+            }
+        } catch {}
+        return ''
+    }
 
     function Get-SessionsJson {
         $out = @()
@@ -44,13 +74,21 @@ try {
                         $duration = [int][Math]::Round($tl.EndTime.TotalSeconds)
                     }
                 } catch {}
+                $thumbPath = ''
+                try {
+                    if ($p.Thumbnail -and ($p.Title -or $p.Artist)) {
+                        $safeName = ($p.Title + '_' + $p.Artist) -replace '[^\w]', '_'
+                        $thumbPath = Save-ThumbnailStream $p.Thumbnail "$safeName.png"
+                    }
+                } catch {}
                 $out += [pscustomobject]@{
-                    app      = $s.SourceAppUserModelId
-                    title    = $p.Title
-                    artist   = $p.Artist
-                    album    = $p.AlbumTitle
-                    status   = $status
-                    duration = $duration
+                    app       = $s.SourceAppUserModelId
+                    title     = $p.Title
+                    artist    = $p.Artist
+                    album     = $p.AlbumTitle
+                    status    = $status
+                    duration  = $duration
+                    thumbnail = $thumbPath
                 }
             } catch {}
         }

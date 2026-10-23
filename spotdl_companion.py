@@ -75,10 +75,21 @@ class App(tk.Tk):
 
         # 1. LIVE NOW PLAYING CARD
         c = self._card(root, "NOW PLAYING")
+        now_row = ttk.Frame(c, style="Card.TFrame")
+        now_row.pack(fill="x", pady=(4, 0))
+
+        self.thumb_label = ttk.Label(now_row, style="Card.TLabel")
+        self.thumb_label.pack(side="left", padx=(0, 10))
+        self.current_img = None
+        self._last_thumb = None
+
+        text_col = ttk.Frame(now_row, style="Card.TFrame")
+        text_col.pack(side="left", fill="both", expand=True)
+
         self.song_var = tk.StringVar(value="Waiting for Spotify...")
         self.artist_var = tk.StringVar(value="Start playing a song in Spotify.")
-        ttk.Label(c, textvariable=self.song_var, style="Song.TLabel", wraplength=660).pack(anchor="w", pady=(6, 2))
-        ttk.Label(c, textvariable=self.artist_var, style="Artist.TLabel", wraplength=660).pack(anchor="w")
+        ttk.Label(text_col, textvariable=self.song_var, style="Song.TLabel", wraplength=540).pack(anchor="w", pady=(2, 2))
+        ttk.Label(text_col, textvariable=self.artist_var, style="Artist.TLabel", wraplength=540).pack(anchor="w")
 
         # ONE BIG DOWNLOAD BUTTON
         self.dl_btn = ttk.Button(c, text="\u2b07   Download", style="Accent.TButton",
@@ -242,6 +253,7 @@ class App(tk.Tk):
             "artist": artist,
             "title": title,
             "duration": duration,
+            "thumbnail": song.get("thumbnail", ""),
             "folder": folder,
             "key": key,
         }
@@ -315,9 +327,25 @@ class App(tk.Tk):
             dur_str = f" ({dur // 60}:{dur % 60:02d})" if dur else ""
             self.song_var.set(res["title"])
             self.artist_var.set(f"{res['artist']}{dur_str}  [{res.get('status', 'Playing')}]")
+
+            thumb = res.get("thumbnail")
+            if thumb and os.path.isfile(thumb) and getattr(self, "_last_thumb", None) != thumb:
+                self._last_thumb = thumb
+                try:
+                    from PIL import Image, ImageTk
+                    im = Image.open(thumb)
+                    im = im.resize((70, 70), Image.Resampling.LANCZOS)
+                    photo = ImageTk.PhotoImage(im)
+                    self.current_img = photo
+                    self.thumb_label.configure(image=photo)
+                except Exception:
+                    pass
         else:
             self.song_var.set("No song playing")
             self.artist_var.set(res.get("message", "Start playing a song in Spotify."))
+            self.thumb_label.configure(image="")
+            self.current_img = None
+            self._last_thumb = None
 
     def _on_job_done(self, job, rc, text):
         elapsed = int(time.time() - self.t0) if self.t0 else 0
@@ -332,8 +360,12 @@ class App(tk.Tk):
             self.status_var.set(msg)
             self.log_msg(msg)
         else:
-            file_exists = core.song_file_exists(job["folder"], job["artist"], job["title"])
-            if (rc in (0, 101)) and file_exists:
+            file_path = core.find_audio_file(job["folder"], job["artist"], job["title"])
+            if (rc in (0, 101)) and file_path:
+                thumb = job.get("thumbnail", "")
+                if thumb and os.path.isfile(thumb):
+                    if core.embed_spotify_cover(file_path, thumb):
+                        self.log_msg(f"Cover art: Embedded exact Spotify thumbnail ({os.path.basename(thumb)})")
                 msg = f"Finished in {elapsed}s: {job['artist']} - {job['title']}"
                 self.status_var.set(msg)
                 self.log_msg(f"SUCCESS ({elapsed}s): {job['artist']} - {job['title']}")
