@@ -16,7 +16,7 @@ CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07")
 PCT_RE = re.compile(r"(\d{1,3})(?:\.\d+)?\s*%")
 URL_RE = re.compile(
-    r"^https?://open\.spotify\.com/(?:intl-[a-z-]+/)?(track|album|playlist|artist)/[A-Za-z0-9]+",
+    r"^https?://open\.spotify\.com/(?:intl-[a-z-]+/)?(track|album|playlist|artist)/([A-Za-z0-9]+)",
     re.IGNORECASE,
 )
 AD_TITLES = {"advertisement", "spotify", "spotify free", "spotify premium"}
@@ -310,8 +310,74 @@ def build_ytdlp_command(ytdlp_cmd, artist, title, folder, duration=0):
     return cmd, base
 
 
+def parse_spotify_url(url):
+    """Return (kind, spotify_id) from a Spotify URL, or (None, None) if not a valid Spotify URL."""
+    m = URL_RE.match(url.strip())
+    if m:
+        return m.group(1).lower(), m.group(2)
+    return None, None
+
+
+def build_spotdl_link_command(spotdl_exe, url, folder):
+    """
+    Build a spotdl command to download a Spotify track/album/playlist URL.
+    spotdl handles Spotify thumbnails natively.
+    - No --bitrate: avoids expensive FFmpeg re-encoding (biggest speed killer)
+    - --threads 4: parallel downloads for albums/playlists
+    - --audio youtube-music youtube: fallback to regular YouTube when YT Music fails
+    Returns cmd list or None if spotdl not available.
+    """
+    if not spotdl_exe or not os.path.isfile(spotdl_exe):
+        return None
+    ffmpeg = find_ffmpeg()
+    ffmpeg_dir = os.path.dirname(ffmpeg) if ffmpeg else ""
+    cmd = [
+        spotdl_exe,
+        "download", url,
+        "--output", os.path.join(folder, "{artists} - {title}.{output-ext}"),
+        "--audio", "youtube-music", "youtube",
+        "--threads", "4",
+        "--overwrite", "skip",
+    ]
+    if ffmpeg_dir:
+        ffmpeg_exe = os.path.join(ffmpeg_dir, "ffmpeg.exe") if os.name == "nt" else "ffmpeg"
+        cmd += ["--ffmpeg", ffmpeg_exe]
+    return cmd
+
+
 def strip_ansi(s):
     return ANSI_RE.sub("", s)
+
+
+SPOTDL_FOUND_RE = re.compile(r"Found (\d+) songs? in (.+?)(?:\s*\(|$)", re.IGNORECASE)
+SPOTDL_DONE_RE = re.compile(r'Downloaded ".+?"', re.IGNORECASE)
+SPOTDL_SKIP_RE = re.compile(r'Skipping ".+?"', re.IGNORECASE)
+SPOTDL_FAIL_RE = re.compile(r'LookupError|No results found|returned no usable results', re.IGNORECASE)
+
+
+def parse_spotdl_progress(line):
+    """
+    Parse a spotdl output line for album/playlist progress.
+    Returns one of:
+      ('total', N, album_name)   - found total track count
+      ('done', title)            - a track was successfully downloaded
+      ('skip', title)            - a track was skipped (already exists)
+      ('fail', msg)              - a track failed to download
+      None                       - not a progress line
+    """
+    m = SPOTDL_FOUND_RE.search(line)
+    if m:
+        return ('total', int(m.group(1)), m.group(2).strip())
+    if SPOTDL_DONE_RE.search(line):
+        # Extract title from: Downloaded "Artist - Title": https://...
+        m2 = re.search(r'Downloaded "(.+?)"', line)
+        return ('done', m2.group(1) if m2 else '')
+    if SPOTDL_SKIP_RE.search(line):
+        m2 = re.search(r'Skipping "(.+?)"', line)
+        return ('skip', m2.group(1) if m2 else '')
+    if SPOTDL_FAIL_RE.search(line):
+        return ('fail', line.strip())
+    return None
 
 
 def parse_progress(line):

@@ -9,6 +9,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 import companion_core as core
+from playlist_downloader import PlaylistDownloader
 
 BG, CARD, FG, MUTED, ACCENT = "#121212", "#1e1e1e", "#f2f2f2", "#9a9a9a", "#1db954"
 
@@ -17,12 +18,13 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("SpotDL Companion")
-        self.geometry("740x600")
-        self.minsize(620, 520)
+        self.geometry("740x720")
+        self.minsize(640, 580)
         self.configure(bg=BG)
 
         self.cfg = core.load_config()
         self.ytdlp_cmd = core.find_ytdlp(self.cfg.get("spotdl_path", ""))
+        self.spotdl_exe = core.find_spotdl(self.cfg.get("spotdl_path", ""))
         self.q = queue.Queue()
         self.holder = {}
         self.busy = False
@@ -32,6 +34,8 @@ class App(tk.Tk):
         self.t0 = None
         self.TIMEOUT = 90           # Per-job timeout in seconds
         self.listener_proc = None
+        self.link_busy = False      # Separate flag for link downloads
+        self.playlist_dl = None     # Background PlaylistDownloader instance
 
         self._style()
         self._build()
@@ -126,6 +130,26 @@ class App(tk.Tk):
         self.bar = ttk.Progressbar(root, style="Green.Horizontal.TProgressbar", mode="determinate", maximum=100)
         self.bar.pack(fill="x", pady=(2, 6))
 
+        # 3b. DOWNLOAD BY LINK CARD
+        c3 = self._card(root, "DOWNLOAD BY LINK  (track · album · playlist)")
+        link_row = ttk.Frame(c3, style="Card.TFrame")
+        link_row.pack(fill="x", pady=(4, 0))
+        self.link_var = tk.StringVar()
+        self.link_entry = ttk.Entry(link_row, textvariable=self.link_var, font=("Segoe UI", 10))
+        self.link_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        self.link_entry.insert(0, "Paste Spotify link here…")
+        self.link_entry.bind("<FocusIn>", self._link_entry_focus_in)
+        self.link_entry.bind("<FocusOut>", self._link_entry_focus_out)
+        self.link_dl_btn = ttk.Button(link_row, text="⬇  Download", style="Accent.TButton",
+                                      command=self.on_link_download_click)
+        self.link_dl_btn.pack(side="left")
+
+        self.link_cancel_btn = ttk.Button(link_row, text="Cancel", state="disabled",
+                                          command=self.on_link_cancel_click)
+        self.link_cancel_btn.pack(side="left", padx=(6, 0))
+        self.link_status_var = tk.StringVar(value="")
+        ttk.Label(c3, textvariable=self.link_status_var, style="Muted.TLabel").pack(anchor="w", pady=(4, 0))
+
         # 4. LOG AREA
         logf = ttk.Frame(root)
         logf.pack(fill="both", expand=True)
@@ -137,7 +161,6 @@ class App(tk.Tk):
         self.log.pack(side="left", fill="both", expand=True)
 
         self.log_msg("Ready. Fast downloads via YouTube Music (yt-dlp).")
-
     # ---------- Helpers ----------
     def log_msg(self, text):
         self.log.configure(state="normal")
@@ -167,6 +190,8 @@ class App(tk.Tk):
         self.listener_proc = proc
 
     def _on_close(self):
+        if self.playlist_dl:
+            self.playlist_dl.stop()
         if self.listener_proc:
             try:
                 self.listener_proc.terminate()
@@ -181,6 +206,15 @@ class App(tk.Tk):
         if d:
             self.folder_var.set(os.path.normpath(d))
             self.save_cfg()
+
+    def _link_entry_focus_in(self, _e):
+        if self.link_entry.get() == "Paste Spotify link here…":
+            self.link_entry.delete(0, "end")
+
+    def _link_entry_focus_out(self, _e):
+        if not self.link_entry.get().strip():
+            self.link_entry.delete(0, "end")
+            self.link_entry.insert(0, "Paste Spotify link here…")
 
     def open_folder(self):
         folder = self.folder_var.get().strip()
@@ -265,6 +299,42 @@ class App(tk.Tk):
             q_len = len(self.download_queue)
             self.status_var.set(f"Queued: {artist} - {title} ({q_len} waiting)")
             self.log_msg(f"Queued: {artist} - {title} ({q_len} in queue)")
+
+    def on_link_download_click(self):
+        url = self.link_var.get().strip()
+        if url == "Paste Spotify link here…" or not url:
+            messagebox.showwarning("No Link", "Please paste a Spotify track, album, or playlist link first.")
+            return
+        kind, sid = core.parse_spotify_url(url)
+        if not kind:
+            messagebox.showerror("Invalid Link", "That doesn't look like a Spotify track/album/playlist URL.\n\nExpected: https://open.spotify.com/...")
+            return
+        folder = self._precheck()
+        if not folder:
+            return
+        if self.link_busy:
+            messagebox.showinfo("Busy", "A link download is already in progress. Wait for it to finish.")
+            return
+        self._start_link_job(url, kind, folder)
+
+    def _start_link_job(self, url, kind, folder):
+        self.link_busy = True
+        self.link_dl_btn.configure(state="disabled")
+        self.link_cancel_btn.configure(state="normal")
+        kind_label = {"track": "Track", "album": "Album", "playlist": "Playlist"}.get(kind, kind.capitalize())
+        self.link_status_var.set(f"Starting {kind_label} download…")
+        self.log_msg(f"--- Link download: {kind_label} — {url}")
+
+        self.playlist_dl = PlaylistDownloader(self.ytdlp_cmd, self.spotdl_exe, self.q)
+        self.playlist_dl.start(url, folder)
+
+
+    def on_link_cancel_click(self):
+        if self.playlist_dl:
+            self.playlist_dl.stop()
+            self.log_msg("Link download cancel requested…")
+            self.link_status_var.set("Cancelling download…")
+        self.link_cancel_btn.configure(state="disabled")
 
     def _process_next_job(self):
         if self.busy:
@@ -371,7 +441,7 @@ class App(tk.Tk):
                 self.log_msg(f"SUCCESS ({elapsed}s): {job['artist']} - {job['title']}")
                 self.bar.stop()
                 self.bar.configure(mode="determinate", value=100)
-            elif not file_exists:
+            elif not file_path:
                 if "does not pass filter" in text:
                     msg = f"No match within duration +/-12s for '{job['title']}'."
                 else:
@@ -407,6 +477,11 @@ class App(tk.Tk):
                         if self.active_job:
                             q_info = f" ({len(self.download_queue)} waiting)" if self.download_queue else ""
                             self.status_var.set(f"Downloading: {self.active_job['title']} - {pct}%{q_info}")
+                elif kind == "link_progress":
+                    status, done_n, total, label = val
+                    self.link_status_var.set(label)
+                elif kind == "link_line":
+                    self.log_msg(val)
                 elif kind == "job_done":
                     job, rc, text = val
                     self._on_job_done(job, rc, text)
@@ -416,6 +491,25 @@ class App(tk.Tk):
                     self.status_var.set(f"Error: {err}")
                     self.busy = False
                     self._process_next_job()
+                elif kind == "link_job_done":
+                    url, lkind, rc, summary = val
+                    self.link_busy = False
+                    self.link_dl_btn.configure(state="normal")
+                    self.link_cancel_btn.configure(state="disabled")
+                    kind_label = {"track": "Track", "album": "Album", "playlist": "Playlist"}.get(lkind, lkind.capitalize())
+                    if rc == 0:
+                        self.link_status_var.set(f"{kind_label} done: {summary} ✓")
+                        self.log_msg(f"SUCCESS: {kind_label} — {summary} — {url}")
+                    else:
+                        self.link_status_var.set(f"{kind_label} complete: {summary}")
+                        self.log_msg(f"Completed with notes: {kind_label} — {summary} — {url}")
+                elif kind == "link_job_fail":
+                    url, err = val
+                    self.link_busy = False
+                    self.link_dl_btn.configure(state="normal")
+                    self.link_cancel_btn.configure(state="disabled")
+                    self.link_status_var.set(f"Error: {err[:80]}")
+                    self.log_msg(f"Link download error: {err}")
         except queue.Empty:
             pass
 
