@@ -281,16 +281,72 @@ class App(tk.Tk):
         return outer
 
     def _build(self):
-        root = ttk.Frame(self, padding=16)
-        root.pack(fill="both", expand=True)
+        container = ttk.Frame(self, padding=12)
+        container.pack(fill="both", expand=True)
 
-        header = ttk.Frame(root)
-        header.pack(fill="x", pady=(0, 8))
+        header = ttk.Frame(container)
+        header.pack(fill="x", pady=(0, 6))
         ttk.Label(header, text="SpotDL Companion", style="Title.TLabel").pack(side="left")
-        ttk.Label(header, text="● Fast High-Quality Music Downloader", style="PanelMuted.TLabel").pack(side="left", padx=12, pady=(4, 0))
+        downloader_name = os.path.basename(self.ytdlp_cmd[0]) if self.ytdlp_cmd else "None"
+        ffmpeg = core.find_ffmpeg()
+        ffmpeg_str = "+ FFmpeg" if ffmpeg else "(no FFmpeg)"
+        self.engine_var = tk.StringVar(value=f"{downloader_name} {ffmpeg_str}")
+        ttk.Label(header, textvariable=self.engine_var, style="PanelMuted.TLabel").pack(side="right", pady=(4, 0))
 
-        # 1. LIVE NOW PLAYING CARD
-        c = self._card(root, "NOW PLAYING")
+        # ── Persistent Bottom Bar (Always visible across both tabs) ──────────
+        self.bottom_bar = ttk.Frame(container, style="Panel.TFrame", padding=10)
+        self.bottom_bar.pack(side="bottom", fill="x", pady=(8, 0))
+
+        # Bottom Row 1: Save to: <folder> [Browse] [Open folder]
+        save_row = ttk.Frame(self.bottom_bar, style="Panel.TFrame")
+        save_row.pack(fill="x", pady=(0, 6))
+        ttk.Label(save_row, text="Save to:", style="Panel.TLabel").pack(side="left")
+        self.folder_var = tk.StringVar(value=self.cfg["download_folder"])
+        ttk.Entry(save_row, textvariable=self.folder_var).pack(side="left", fill="x", expand=True, padx=8)
+        RoundedButton(save_row, text="Browse...", width=86, height=28, radius=6, style="secondary",
+                      parent_bg=PANEL, command=self.browse_folder).pack(side="left")
+        RoundedButton(save_row, text="Open Folder", width=95, height=28, radius=6, style="secondary",
+                      parent_bg=PANEL, command=self.open_folder).pack(side="left", padx=(6, 0))
+
+        # Bottom Row 2: Status line, Cancel button, and Show Details toggle
+        status_row = ttk.Frame(self.bottom_bar, style="Panel.TFrame")
+        status_row.pack(fill="x", pady=(0, 4))
+        self.status_var = tk.StringVar(value="Ready.")
+        ttk.Label(status_row, textvariable=self.status_var, style="Panel.TLabel").pack(side="left", fill="x", expand=True)
+
+        self.cancel_btn = RoundedButton(status_row, text="Cancel", width=75, height=28, radius=6,
+                                        style="secondary", parent_bg=PANEL, command=self.cancel)
+        self.cancel_btn.configure(state="disabled")
+        self.cancel_btn.pack(side="right", padx=(6, 0))
+
+        self.details_btn = RoundedButton(status_row, text="Show details", width=96, height=28, radius=6,
+                                         style="outline", parent_bg=PANEL, command=self.toggle_details)
+        self.details_btn.pack(side="right")
+
+        # Bottom Row 3: Progress bar
+        self.bar = ttk.Progressbar(self.bottom_bar, style="Purple.Horizontal.TProgressbar", mode="determinate", maximum=100)
+        self.bar.pack(fill="x", pady=(4, 0))
+
+        # Bottom Row 4: Log Area (Hidden by default, toggled via Show details)
+        self.log_container = ttk.Frame(self.bottom_bar, style="Panel.TFrame")
+        self.log_details_visible = False
+        self.log = tk.Text(self.log_container, height=6, bg="#0B0712", fg=TEXT, insertbackground="#fff",
+                           font=("Consolas", 9), wrap="word", state="disabled", relief="flat")
+        sb = ttk.Scrollbar(self.log_container, command=self.log.yview)
+        self.log.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        self.log.pack(side="left", fill="both", expand=True)
+
+        # ── Two Tabs Notebook ────────────────────────────────────────────────
+        self.notebook = ttk.Notebook(container)
+        self.tab_now_playing = ttk.Frame(self.notebook, style="TFrame")
+        self.tab_link = ttk.Frame(self.notebook, style="TFrame")
+        self.notebook.add(self.tab_now_playing, text="  Now Playing  ")
+        self.notebook.add(self.tab_link, text="  Link / Playlist  ")
+        self.notebook.pack(fill="both", expand=True, pady=(2, 0))
+
+        # Tab 1: NOW PLAYING TAB CONTENT
+        c = self._card(self.tab_now_playing, "NOW PLAYING")
         now_row = ttk.Frame(c, style="Card.TFrame")
         now_row.pack(fill="x", pady=(6, 0))
 
@@ -307,48 +363,13 @@ class App(tk.Tk):
         ttk.Label(text_col, textvariable=self.song_var, style="Song.TLabel", wraplength=620).pack(anchor="w", pady=(2, 2))
         ttk.Label(text_col, textvariable=self.artist_var, style="Artist.TLabel", wraplength=620).pack(anchor="w")
 
-        # ONE BIG DOWNLOAD BUTTON
         self.dl_btn = RoundedButton(c, text="⬇   Download", width=160, height=40, radius=8,
                                     style="primary", parent_bg=CARD, font=("Segoe UI", 11, "bold"),
                                     command=self.on_download_click)
         self.dl_btn.pack(fill="x", pady=(12, 4))
 
-        # 2. SETTINGS CARD
-        c2 = self._card(root, "SETTINGS")
-        row = ttk.Frame(c2, style="Card.TFrame")
-        row.pack(fill="x", pady=(4, 0))
-        ttk.Label(row, text="Save to:", style="Card.TLabel").pack(side="left")
-        self.folder_var = tk.StringVar(value=self.cfg["download_folder"])
-        ttk.Entry(row, textvariable=self.folder_var).pack(side="left", fill="x", expand=True, padx=6)
-        RoundedButton(row, text="Browse...", width=90, height=32, radius=6, style="secondary",
-                      parent_bg=CARD, command=self.browse_folder).pack(side="left")
-        RoundedButton(row, text="Open Folder", width=100, height=32, radius=6, style="secondary",
-                      parent_bg=CARD, command=self.open_folder).pack(side="left", padx=(6, 0))
-
-        row2 = ttk.Frame(c2, style="Card.TFrame")
-        row2.pack(fill="x", pady=(6, 0))
-        ttk.Label(row2, text="Engine:", style="Card.TLabel").pack(side="left")
-        downloader_name = os.path.basename(self.ytdlp_cmd[0]) if self.ytdlp_cmd else "None"
-        ffmpeg = core.find_ffmpeg()
-        ffmpeg_str = "+ FFmpeg" if ffmpeg else "(no FFmpeg)"
-        self.engine_var = tk.StringVar(value=f"{downloader_name} {ffmpeg_str}")
-        ttk.Label(row2, textvariable=self.engine_var, style="Muted.TLabel").pack(side="left", padx=6)
-
-        # 3. STATUS & PROGRESS
-        row3 = ttk.Frame(root)
-        row3.pack(fill="x", pady=(8, 2))
-        self.status_var = tk.StringVar(value="Ready.")
-        ttk.Label(row3, textvariable=self.status_var).pack(side="left")
-        self.cancel_btn = RoundedButton(row3, text="Cancel", width=80, height=30, radius=6,
-                                        style="secondary", parent_bg=BG, command=self.cancel)
-        self.cancel_btn.configure(state="disabled")
-        self.cancel_btn.pack(side="right")
-
-        self.bar = ttk.Progressbar(root, style="Purple.Horizontal.TProgressbar", mode="determinate", maximum=100)
-        self.bar.pack(fill="x", pady=(4, 8))
-
-        # 3b. DOWNLOAD BY LINK CARD
-        c3 = self._card(root, "DOWNLOAD BY LINK  (track · album · playlist)")
+        # Tab 2: LINK / PLAYLIST TAB CONTENT
+        c3 = self._card(self.tab_link, "DOWNLOAD BY LINK  (track · album · playlist)")
         link_row = ttk.Frame(c3, style="Card.TFrame")
         link_row.pack(fill="x", pady=(4, 0))
         self.link_var = tk.StringVar()
@@ -368,17 +389,16 @@ class App(tk.Tk):
         self.link_status_var = tk.StringVar(value="")
         ttk.Label(c3, textvariable=self.link_status_var, style="Muted.TLabel").pack(anchor="w", pady=(4, 0))
 
-        # 4. LOG AREA
-        logf = ttk.Frame(root)
-        logf.pack(fill="both", expand=True)
-        self.log = tk.Text(logf, height=8, bg=PANEL, fg=TEXT, insertbackground="#fff",
-                           font=("Consolas", 9), wrap="word", state="disabled", relief="flat")
-        sb = ttk.Scrollbar(logf, command=self.log.yview)
-        self.log.configure(yscrollcommand=sb.set)
-        sb.pack(side="right", fill="y")
-        self.log.pack(side="left", fill="both", expand=True)
-
         self.log_msg("Ready. Fast downloads via YouTube Music (yt-dlp).")
+
+    def toggle_details(self):
+        self.log_details_visible = not self.log_details_visible
+        if self.log_details_visible:
+            self.log_container.pack(fill="x", pady=(8, 0))
+            self.details_btn.set_text("Hide details")
+        else:
+            self.log_container.pack_forget()
+            self.details_btn.set_text("Show details")
     # ---------- Helpers ----------
     def log_msg(self, text):
         self.log.configure(state="normal")
