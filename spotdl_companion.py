@@ -345,28 +345,36 @@ class App(tk.Tk):
         self.notebook.add(self.tab_link, text="  Link / Playlist  ")
         self.notebook.pack(fill="both", expand=True, pady=(2, 0))
 
-        # Tab 1: NOW PLAYING TAB CONTENT
-        c = self._card(self.tab_now_playing, "NOW PLAYING")
-        now_row = ttk.Frame(c, style="Card.TFrame")
-        now_row.pack(fill="x", pady=(6, 0))
+        # Tab 1: NOW PLAYING TAB CONTENT (Big Cover Look)
+        self.np_container = ttk.Frame(self.tab_now_playing, style="TFrame")
+        self.np_container.pack(fill="both", expand=True, pady=6)
 
-        self.thumb_label = ttk.Label(now_row, style="Card.TLabel")
-        self.thumb_label.pack(side="left", padx=(0, 12))
-        self.current_img = None
-        self._last_thumb = None
+        np_card = ttk.Frame(self.np_container, style="TFrame")
+        np_card.place(relx=0.5, rely=0.48, anchor="center")
 
-        text_col = ttk.Frame(now_row, style="Card.TFrame")
-        text_col.pack(side="left", fill="both", expand=True)
+        self.placeholder_img = self._make_placeholder_cover(280)
+        self.current_img = self.placeholder_img
+        self._last_thumb = "__placeholder__"
+        self._last_np_key = None
+
+        self.thumb_label = tk.Label(np_card, image=self.placeholder_img, bg=BG, bd=0, highlightthickness=0)
+        self.thumb_label.pack(pady=(0, 14))
 
         self.song_var = tk.StringVar(value="Waiting for Spotify...")
         self.artist_var = tk.StringVar(value="Start playing a song in Spotify.")
-        ttk.Label(text_col, textvariable=self.song_var, style="Song.TLabel", wraplength=620).pack(anchor="w", pady=(2, 2))
-        ttk.Label(text_col, textvariable=self.artist_var, style="Artist.TLabel", wraplength=620).pack(anchor="w")
 
-        self.dl_btn = RoundedButton(c, text="⬇   Download", width=160, height=40, radius=8,
-                                    style="primary", parent_bg=CARD, font=("Segoe UI", 11, "bold"),
+        self.np_title_lbl = tk.Label(np_card, textvariable=self.song_var, font=("Segoe UI", 20, "bold"),
+                                     fg=TEXT, bg=BG, justify="center", wraplength=640)
+        self.np_title_lbl.pack(pady=(0, 4))
+
+        self.np_artist_lbl = tk.Label(np_card, textvariable=self.artist_var, font=("Segoe UI", 12),
+                                      fg=MUTED, bg=BG, justify="center", wraplength=640)
+        self.np_artist_lbl.pack(pady=(0, 18))
+
+        self.dl_btn = RoundedButton(np_card, text="⬇   Download", width=280, height=44, radius=10,
+                                    style="primary", parent_bg=BG, font=("Segoe UI", 12, "bold"),
                                     command=self.on_download_click)
-        self.dl_btn.pack(fill="x", pady=(12, 4))
+        self.dl_btn.pack(pady=(0, 4))
 
         # Tab 2: LINK / PLAYLIST TAB CONTENT
         c3 = self._card(self.tab_link, "DOWNLOAD BY LINK  (track · album · playlist)")
@@ -627,33 +635,86 @@ class App(tk.Tk):
                 pass
             self.log_msg("Cancel requested...")
 
+    # ---------- Cover Art Helpers ----------
+    def _make_placeholder_cover(self, size=280):
+        im = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        d = ImageDraw.Draw(im)
+        d.rounded_rectangle([(1, 1), (size - 2, size - 2)], radius=16, fill=CARD, outline=BORDER, width=2)
+        try:
+            font_note = ImageFont.truetype("seguisym.ttf", 64)
+        except Exception:
+            font_note = ImageFont.load_default()
+        d.text((size // 2, size // 2 - 25), "♫", fill=ACCENT, font=font_note, anchor="mm")
+        try:
+            font_txt = ImageFont.truetype("segoeui.ttf", 11)
+        except Exception:
+            font_txt = ImageFont.load_default()
+        d.text((size // 2, size // 2 + 35), "Play a song in Spotify to begin", fill=MUTED, font=font_txt, anchor="mm")
+        return ImageTk.PhotoImage(im)
+
+    def _process_cover_art(self, thumb_path, size=280):
+        try:
+            im = Image.open(thumb_path).convert("RGBA")
+            im = im.resize((size, size), Image.Resampling.LANCZOS)
+            mask = Image.new("L", (size, size), 0)
+            d = ImageDraw.Draw(mask)
+            d.rounded_rectangle([(0, 0), (size - 1, size - 1)], radius=16, fill=255)
+
+            rounded = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+            rounded.paste(im, (0, 0), mask=mask)
+
+            border_im = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+            db = ImageDraw.Draw(border_im)
+            db.rounded_rectangle([(1, 1), (size - 2, size - 2)], radius=16, outline=ACCENT, width=2)
+            out = Image.alpha_composite(rounded, border_im)
+            return ImageTk.PhotoImage(out)
+        except Exception:
+            return None
+
     # ---------- Event Loop & Handlers ----------
     def _on_now_playing(self, res):
         self.live_song = res
         if res.get("ok"):
+            title = res.get("title", "").strip()
+            artist = res.get("artist", "").strip()
+            status = res.get("status", "Playing")
             dur = res.get("duration", 0)
-            dur_str = f" ({dur // 60}:{dur % 60:02d})" if dur else ""
-            self.song_var.set(res["title"])
-            self.artist_var.set(f"{res['artist']}{dur_str}  [{res.get('status', 'Playing')}]")
+            dur_str = f" • {dur // 60}:{dur % 60:02d}" if dur else ""
+            thumb = res.get("thumbnail", "")
 
-            thumb = res.get("thumbnail")
-            if thumb and os.path.isfile(thumb) and getattr(self, "_last_thumb", None) != thumb:
-                self._last_thumb = thumb
-                try:
-                    from PIL import Image, ImageTk
-                    im = Image.open(thumb)
-                    im = im.resize((70, 70), Image.Resampling.LANCZOS)
-                    photo = ImageTk.PhotoImage(im)
-                    self.current_img = photo
-                    self.thumb_label.configure(image=photo)
-                except Exception:
-                    pass
+            # Anti-flicker: only update if state changed
+            state_key = (title, artist, status, dur, thumb)
+            if getattr(self, "_last_np_key", None) == state_key:
+                return
+            self._last_np_key = state_key
+
+            self.song_var.set(title)
+            self.artist_var.set(f"{artist}{dur_str}  [{status}]")
+
+            if thumb and os.path.isfile(thumb):
+                if getattr(self, "_last_thumb", None) != thumb:
+                    self._last_thumb = thumb
+                    photo = self._process_cover_art(thumb, 280)
+                    if photo:
+                        self.current_img = photo
+                        self.thumb_label.configure(image=photo)
+            else:
+                if self._last_thumb != "__placeholder__":
+                    self._last_thumb = "__placeholder__"
+                    self.current_img = self.placeholder_img
+                    self.thumb_label.configure(image=self.placeholder_img)
         else:
+            state_key = ("__none__", res.get("message", ""))
+            if getattr(self, "_last_np_key", None) == state_key:
+                return
+            self._last_np_key = state_key
+
             self.song_var.set("No song playing")
-            self.artist_var.set(res.get("message", "Start playing a song in Spotify."))
-            self.thumb_label.configure(image="")
-            self.current_img = None
-            self._last_thumb = None
+            self.artist_var.set(res.get("message") or "Play a song in Spotify to begin.")
+            if self._last_thumb != "__placeholder__":
+                self._last_thumb = "__placeholder__"
+                self.current_img = self.placeholder_img
+                self.thumb_label.configure(image=self.placeholder_img)
 
     def _on_job_done(self, job, rc, text):
         elapsed = int(time.time() - self.t0) if self.t0 else 0
