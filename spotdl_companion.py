@@ -204,9 +204,10 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("SpotDL Companion")
-        self.geometry("900x680")
-        self.minsize(780, 560)
+        self.geometry("920x720")
+        self.minsize(820, 580)
         self.configure(bg=BG)
+
 
         self.cfg = core.load_config()
         self.ytdlp_cmd = core.find_ytdlp(self.cfg.get("spotdl_path", ""))
@@ -518,15 +519,15 @@ class App(tk.Tk):
         # State C: Collection view
         self.coll_view = ttk.Frame(self.link_body, style="TFrame")
 
-        # Header card (Music app style)
-        self.header_card = ttk.Frame(self.coll_view, style="Card.TFrame", padding=12)
-        self.header_card.pack(fill="x", pady=(0, 6))
+        # ── Header card (Music app style) ────────────────────────────────────
+        self.header_card = ttk.Frame(self.coll_view, style="Card.TFrame", padding=(10, 8))
+        self.header_card.pack(side="top", fill="x", pady=(0, 4))
 
-        # Cover art on left (140x140)
-        self.coll_placeholder_img = self._make_collection_placeholder_cover(140)
+        # Cover art on left (105x105)
+        self.coll_placeholder_img = self._make_collection_placeholder_cover(105)
         self.coll_cover_img = self.coll_placeholder_img
         self.coll_cover_label = tk.Label(self.header_card, image=self.coll_cover_img, bg=CARD, bd=0)
-        self.coll_cover_label.pack(side="left", padx=(0, 14))
+        self.coll_cover_label.pack(side="left", padx=(0, 12))
 
         # Info on right
         info_col = ttk.Frame(self.header_card, style="Card.TFrame")
@@ -536,8 +537,8 @@ class App(tk.Tk):
         ttk.Label(info_col, textvariable=self.coll_badge_var, style="Muted.TLabel", font=("Segoe UI", 9, "bold")).pack(anchor="w")
 
         self.coll_title_var = tk.StringVar(value="")
-        tk.Label(info_col, textvariable=self.coll_title_var, font=("Segoe UI", 15, "bold"),
-                 fg=TEXT, bg=CARD, anchor="w", justify="left").pack(anchor="w", pady=(2, 2))
+        tk.Label(info_col, textvariable=self.coll_title_var, font=("Segoe UI", 14, "bold"),
+                 fg=TEXT, bg=CARD, anchor="w", justify="left").pack(anchor="w", pady=(1, 1))
 
         self.coll_owner_var = tk.StringVar(value="")
         ttk.Label(info_col, textvariable=self.coll_owner_var, style="Muted.TLabel").pack(anchor="w")
@@ -546,9 +547,9 @@ class App(tk.Tk):
         self.coll_note_label = tk.Label(info_col, text="⚠ Spotify's public page may only list the first 100 tracks of long playlists.",
                                         font=("Segoe UI", 9), fg=WARNING, bg=CARD)
 
-        # Toolbar Card (Select all, Only new, None, counter, search)
-        toolbar_card = ttk.Frame(self.coll_view, style="Card.TFrame", padding=(10, 6))
-        toolbar_card.pack(fill="x", pady=(0, 6))
+        # ── Toolbar Card (Select all, Only new, None, counter, search) ───────
+        toolbar_card = ttk.Frame(self.coll_view, style="Card.TFrame", padding=(8, 5))
+        toolbar_card.pack(side="top", fill="x", pady=(0, 4))
 
         RoundedButton(toolbar_card, text="Select all", width=80, height=26, radius=5,
                       style="secondary", parent_bg=CARD, font=("Segoe UI", 9), command=self._select_all).pack(side="left", padx=(0, 4))
@@ -567,9 +568,29 @@ class App(tk.Tk):
         self.search_entry.bind("<KeyRelease>", self._on_search_changed)
         ttk.Label(toolbar_card, text="🔍", style="Muted.TLabel").pack(side="right", padx=(0, 4))
 
-        # Track list Treeview (in Card.TFrame)
+        # ── Options & Action Card (PINNED TO BOTTOM FIRST so it is always visible) ─
+        options_card = ttk.Frame(self.coll_view, style="Card.TFrame", padding=(12, 8))
+        options_card.pack(side="bottom", fill="x", pady=(6, 0))
+
+        self.subfolder_var = tk.BooleanVar(value=True)
+        subfolder_chk = ttk.Checkbutton(options_card, text="Save in a folder named after album/playlist",
+                                        variable=self.subfolder_var, style="TCheckbutton")
+        subfolder_chk.pack(side="left", padx=(4, 16))
+
+        self.zip_var = tk.BooleanVar(value=False)
+        zip_chk = ttk.Checkbutton(options_card, text="Also create a ZIP",
+                                  variable=self.zip_var, style="TCheckbutton")
+        zip_chk.pack(side="left")
+
+        self.dl_selected_btn = RoundedButton(options_card, text="Download Selected (0)", width=210, height=36,
+                                             radius=8, style="primary", parent_bg=CARD,
+                                             command=self.on_download_selected_click)
+        self.dl_selected_btn.configure(state="disabled")
+        self.dl_selected_btn.pack(side="right")
+
+        # ── Track list Treeview (expands in remaining middle area) ────────────
         table_card = ttk.Frame(self.coll_view, style="Card.TFrame", padding=2)
-        table_card.pack(fill="both", expand=True, pady=(0, 6))
+        table_card.pack(side="top", fill="both", expand=True)
 
         tree_scroll = ttk.Scrollbar(table_card, orient="vertical")
         tree_scroll.pack(side="right", fill="y")
@@ -608,25 +629,6 @@ class App(tk.Tk):
         self.tree.bind("<space>", self._on_tree_space)
         self.tree.pack(side="left", fill="both", expand=True)
 
-        # Options Row under table
-        options_row = ttk.Frame(self.coll_view, style="TFrame")
-        options_row.pack(fill="x", pady=(2, 0))
-
-        self.subfolder_var = tk.BooleanVar(value=True)
-        subfolder_chk = ttk.Checkbutton(options_row, text="Save in a folder named after album/playlist",
-                                        variable=self.subfolder_var, style="TCheckbutton")
-        subfolder_chk.pack(side="left", padx=(2, 16))
-
-        self.zip_var = tk.BooleanVar(value=False)
-        zip_chk = ttk.Checkbutton(options_row, text="Also create a ZIP",
-                                  variable=self.zip_var, style="TCheckbutton")
-        zip_chk.pack(side="left")
-
-        self.dl_selected_btn = RoundedButton(options_row, text="Download Selected (0)", width=200, height=36,
-                                             radius=8, style="primary", parent_bg=BG,
-                                             command=self.on_download_selected_click)
-        self.dl_selected_btn.configure(state="disabled")
-        self.dl_selected_btn.pack(side="right")
 
 
     def toggle_details(self):
@@ -979,7 +981,8 @@ class App(tk.Tk):
             self.coll_note_label.pack_forget()
 
         # Load cover
-        self._fetch_and_show_collection_cover(cover_url, 140)
+        self._fetch_and_show_collection_cover(cover_url, 105)
+
 
         # Build track_data & populate
         folder = self.folder_var.get().strip()
