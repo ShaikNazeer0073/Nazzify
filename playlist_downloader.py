@@ -640,12 +640,13 @@ class PlaylistDownloader:
         """Fetch metadata without downloading audio."""
         return fetch_collection(self.spotdl_exe, url)
 
-    def start(self, url: str, folder: str, selected_track_ids: list[str] | set[str] | None = None, options: dict | None = None):
+    def start(self, url: str, folder: str, selected_track_ids: list[str] | set[str] | None = None,
+              options: dict | None = None, collection_info: dict | None = None):
         """Begin or resume download asynchronously for selected tracks."""
         self._stop.clear()
         self._thread = threading.Thread(
             target=self._run,
-            args=(url, folder, selected_track_ids, options or {}),
+            args=(url, folder, selected_track_ids, options or {}, collection_info),
             daemon=True,
             name="PlaylistDL",
         )
@@ -661,21 +662,25 @@ class PlaylistDownloader:
     def _log(self, msg: str):
         self._emit("link_line", msg)
 
-    def _run(self, url: str, folder: str, selected_track_ids=None, options=None):
+    def _run(self, url: str, folder: str, selected_track_ids=None, options=None, collection_info=None):
         options = options or {}
         stop = self._stop
         kind, _ = core.parse_spotify_url(url)
         kind_label = {"track": "Track", "album": "Album", "playlist": "Playlist"}.get(kind or "", "Link")
 
         # ── Phase 1: Fetch Spotify Metadata ──────────────────────────────────
-        self._emit("link_progress", ("fetching", 0, 0, f"Fetching {kind_label} metadata from Spotify…"))
-        coll_info = fetch_collection(self.spotdl_exe, url)
+        if collection_info and collection_info.get("tracks"):
+            coll_info = collection_info
+        else:
+            self._emit("link_progress", ("fetching", 0, 0, f"Fetching {kind_label} metadata from Spotify…"))
+            coll_info = fetch_collection(self.spotdl_exe, url)
 
         if not coll_info or not coll_info.get("tracks"):
             self._emit("link_progress", ("error", 0, 0,
                 "Could not fetch track list from Spotify. Please check connection and link."))
-            self._emit("link_job_done", (url, kind or "link", 1, "metadata_fetch_failed", folder, None))
+            self._emit("link_job_done", (url, kind or "link", 1, "metadata_fetch_failed", folder, None, [], False, ""))
             return
+
 
         tracks_raw = coll_info["tracks"]
         coll_name = coll_info.get("name") or kind_label
@@ -755,8 +760,9 @@ class PlaylistDownloader:
         total_selected = len(sel_set)
         if not pending:
             done_n = sum(1 for tid in sel_set if state["tracks"].get(tid, {}).get("status") in ("done", "review"))
+            already_files = [ts.get("output_file") for tid in sel_set if (ts := state["tracks"].get(tid)) and ts.get("status") in ("done", "review") and ts.get("output_file")]
             self._emit("link_progress", ("finished", done_n, total_selected, f"All {total_selected} selected songs already downloaded ✓"))
-            self._emit("link_job_done", (url, kind or "link", 0, "all_already_done", effective_folder, None))
+            self._emit("link_job_done", (url, kind or "link", 0, "all_already_done", effective_folder, None, already_files, False, coll_name))
             return
 
         self._log(f"{len(pending)} song(s) to download ({total_selected - len(pending)} already downloaded)")
@@ -844,4 +850,4 @@ class PlaylistDownloader:
         summary = ", ".join(parts)
 
         self._emit("link_progress", ("finished", final_done, total_selected, summary))
-        self._emit("link_job_done", (url, kind or "link", 0 if final_fail < total_selected else 1, summary, effective_folder, created_zip))
+        self._emit("link_job_done", (url, kind or "link", 0 if final_fail < total_selected else 1, summary, effective_folder, created_zip, finished_files, stop.is_set(), coll_name))

@@ -1,15 +1,17 @@
 """SpotDL Companion - a fast, single-button Windows desktop downloader powered by yt-dlp."""
+import io
 import os
 import queue
 import subprocess
 import sys
 import threading
 import time
+import urllib.request
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 import companion_core as core
-from playlist_downloader import PlaylistDownloader
+from playlist_downloader import PlaylistDownloader, create_collection_zip, fetch_collection
 
 from PIL import Image, ImageTk, ImageDraw, ImageFont
 
@@ -145,6 +147,16 @@ class RoundedButton(tk.Canvas):
 
     config = configure
 
+    def cget(self, key):
+        if key == "state":
+            return self.state
+        if key == "text":
+            return self.text
+        return super().cget(key)
+
+    __getitem__ = cget
+
+
     def _get_bg_img(self, w, h, fill_col, border_col=None):
         key = (w, h, self.radius, fill_col, border_col)
         if key in self._img_cache:
@@ -209,7 +221,17 @@ class App(tk.Tk):
         self.TIMEOUT = 90           # Per-job timeout in seconds
         self.listener_proc = None
         self.link_busy = False      # Separate flag for link downloads
+        self.link_cancelled = False
         self.playlist_dl = None     # Background PlaylistDownloader instance
+        self.current_collection = None
+        self.track_data = {}
+        self._last_clicked_iid = None
+        self._dismissed_clip = ""
+        self._last_effective_folder = ""
+        self._last_created_zip = ""
+        self._last_finished_files = []
+        self.coll_placeholder_img = None
+        self.coll_cover_img = None
 
         self._style()
         self._build()
@@ -323,6 +345,15 @@ class App(tk.Tk):
                                          style="outline", parent_bg=PANEL, command=self.toggle_details)
         self.details_btn.pack(side="right")
 
+        self.show_zip_btn = RoundedButton(status_row, text="Show ZIP", width=85, height=28, radius=6,
+                                          style="secondary", parent_bg=PANEL, font=("Segoe UI", 9),
+                                          command=self._show_done_zip)
+
+        self.open_done_folder_btn = RoundedButton(status_row, text="Open folder", width=95, height=28, radius=6,
+                                                  style="secondary", parent_bg=PANEL, font=("Segoe UI", 9),
+                                                  command=self._open_done_folder)
+
+
         # Bottom Row 3: Progress bar
         self.bar = ttk.Progressbar(self.bottom_bar, style="Purple.Horizontal.TProgressbar", mode="determinate", maximum=100)
         self.bar.pack(fill="x", pady=(4, 0))
@@ -344,6 +375,7 @@ class App(tk.Tk):
         self.notebook.add(self.tab_now_playing, text="  Now Playing  ")
         self.notebook.add(self.tab_link, text="  Link / Playlist  ")
         self.notebook.pack(fill="both", expand=True, pady=(2, 0))
+        self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
         # Tab 1: NOW PLAYING TAB CONTENT — two columns
         self.np_container = ttk.Frame(self.tab_now_playing, style="TFrame")
@@ -426,27 +458,176 @@ class App(tk.Tk):
         self.queue_empty_lbl.pack(pady=20)
 
         # Tab 2: LINK / PLAYLIST TAB CONTENT
-        c3 = self._card(self.tab_link, "DOWNLOAD BY LINK  (track · album · playlist)")
-        link_row = ttk.Frame(c3, style="Card.TFrame")
-        link_row.pack(fill="x", pady=(4, 0))
+        self._build_link_tab()
+
+        self.log_msg("Ready. Fast downloads via YouTube Music (yt-dlp).")
+
+    def _build_link_tab(self):
+        container = ttk.Frame(self.tab_link, style="TFrame")
+        container.pack(fill="both", expand=True, padx=4, pady=4)
+
+        # ── 1. Top Link Input Row ────────────────────────────────────────────
+        top_frame = ttk.Frame(container, style="TFrame")
+        top_frame.pack(fill="x", pady=(0, 6))
+
+        input_row = ttk.Frame(top_frame, style="TFrame")
+        input_row.pack(fill="x")
+
         self.link_var = tk.StringVar()
-        self.link_entry = ttk.Entry(link_row, textvariable=self.link_var, font=("Segoe UI", 10))
+        self.link_entry = ttk.Entry(input_row, textvariable=self.link_var, font=("Segoe UI", 10))
         self.link_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
         self.link_entry.insert(0, "Paste Spotify link here…")
         self.link_entry.bind("<FocusIn>", self._link_entry_focus_in)
         self.link_entry.bind("<FocusOut>", self._link_entry_focus_out)
-        self.link_dl_btn = RoundedButton(link_row, text="⬇  Download", width=120, height=34, radius=6,
-                                         style="primary", parent_bg=CARD, command=self.on_link_download_click)
-        self.link_dl_btn.pack(side="left")
+        self.link_entry.bind("<Return>", lambda e: self.on_fetch_click())
 
-        self.link_cancel_btn = RoundedButton(link_row, text="Cancel", width=80, height=34, radius=6,
-                                             style="secondary", parent_bg=CARD, command=self.on_link_cancel_click)
-        self.link_cancel_btn.configure(state="disabled")
-        self.link_cancel_btn.pack(side="left", padx=(6, 0))
-        self.link_status_var = tk.StringVar(value="")
-        ttk.Label(c3, textvariable=self.link_status_var, style="Muted.TLabel").pack(anchor="w", pady=(4, 0))
+        self.fetch_btn = RoundedButton(input_row, text="Fetch", width=95, height=34, radius=6,
+                                       style="primary", parent_bg=BG, command=self.on_fetch_click)
 
-        self.log_msg("Ready. Fast downloads via YouTube Music (yt-dlp).")
+        self.fetch_btn.pack(side="left")
+
+        # ── 2. Clipboard Helper Banner ───────────────────────────────────────
+        self.clip_banner = ttk.Frame(top_frame, style="Card.TFrame", padding=(12, 6))
+        self.clip_banner_var = tk.StringVar(value="Spotify link found on clipboard — Use it?")
+        ttk.Label(self.clip_banner, textvariable=self.clip_banner_var, style="Card.TLabel").pack(side="left")
+        RoundedButton(self.clip_banner, text="✕", width=28, height=24, radius=4,
+                      style="secondary", parent_bg=CARD, command=self._dismiss_clipboard_banner).pack(side="right", padx=(4, 0))
+        RoundedButton(self.clip_banner, text="Use Link", width=80, height=24, radius=4,
+                      style="primary", parent_bg=CARD, command=self._apply_clipboard_link).pack(side="right")
+
+        # ── 3. Main Content Container (Holds Empty, Loading, or Collection) ──
+        self.link_body = ttk.Frame(container, style="TFrame")
+        self.link_body.pack(fill="both", expand=True)
+
+        # State A: Empty view
+        self.empty_card = ttk.Frame(self.link_body, style="Card.TFrame", padding=30)
+        self.empty_card.pack(fill="both", expand=True)
+        tk.Label(self.empty_card, text="♫", font=("Segoe UI Symbol", 44), fg=ACCENT, bg=CARD).pack(pady=(45, 12))
+        self.empty_label = tk.Label(self.empty_card,
+                                    text="Paste a Spotify album, playlist, or track URL above and click Fetch to preview and select tracks.",
+                                    font=("Segoe UI", 11), fg=MUTED, bg=CARD, wraplength=480, justify="center")
+        self.empty_label.pack()
+
+        # State B: Loading view
+        self.loading_card = ttk.Frame(self.link_body, style="Card.TFrame", padding=30)
+        tk.Label(self.loading_card, text="Reading Spotify collection…", font=("Segoe UI", 13, "bold"), fg=TEXT, bg=CARD).pack(pady=(45, 8))
+        self.loading_sub_label = tk.Label(self.loading_card, text="Fetching track list and album art from Spotify…",
+                                          font=("Segoe UI", 10), fg=MUTED, bg=CARD)
+        self.loading_sub_label.pack()
+
+        # State C: Collection view
+        self.coll_view = ttk.Frame(self.link_body, style="TFrame")
+
+        # Header card (Music app style)
+        self.header_card = ttk.Frame(self.coll_view, style="Card.TFrame", padding=12)
+        self.header_card.pack(fill="x", pady=(0, 6))
+
+        # Cover art on left (140x140)
+        self.coll_placeholder_img = self._make_collection_placeholder_cover(140)
+        self.coll_cover_img = self.coll_placeholder_img
+        self.coll_cover_label = tk.Label(self.header_card, image=self.coll_cover_img, bg=CARD, bd=0)
+        self.coll_cover_label.pack(side="left", padx=(0, 14))
+
+        # Info on right
+        info_col = ttk.Frame(self.header_card, style="Card.TFrame")
+        info_col.pack(side="left", fill="both", expand=True)
+
+        self.coll_badge_var = tk.StringVar(value="ALBUM • 8 TRACKS")
+        ttk.Label(info_col, textvariable=self.coll_badge_var, style="Muted.TLabel", font=("Segoe UI", 9, "bold")).pack(anchor="w")
+
+        self.coll_title_var = tk.StringVar(value="")
+        tk.Label(info_col, textvariable=self.coll_title_var, font=("Segoe UI", 15, "bold"),
+                 fg=TEXT, bg=CARD, anchor="w", justify="left").pack(anchor="w", pady=(2, 2))
+
+        self.coll_owner_var = tk.StringVar(value="")
+        ttk.Label(info_col, textvariable=self.coll_owner_var, style="Muted.TLabel").pack(anchor="w")
+
+        # 100-track warning note
+        self.coll_note_label = tk.Label(info_col, text="⚠ Spotify's public page may only list the first 100 tracks of long playlists.",
+                                        font=("Segoe UI", 9), fg=WARNING, bg=CARD)
+
+        # Toolbar Card (Select all, Only new, None, counter, search)
+        toolbar_card = ttk.Frame(self.coll_view, style="Card.TFrame", padding=(10, 6))
+        toolbar_card.pack(fill="x", pady=(0, 6))
+
+        RoundedButton(toolbar_card, text="Select all", width=80, height=26, radius=5,
+                      style="secondary", parent_bg=CARD, font=("Segoe UI", 9), command=self._select_all).pack(side="left", padx=(0, 4))
+        RoundedButton(toolbar_card, text="Only new", width=80, height=26, radius=5,
+                      style="secondary", parent_bg=CARD, font=("Segoe UI", 9), command=self._select_only_new).pack(side="left", padx=(0, 4))
+        RoundedButton(toolbar_card, text="None", width=55, height=26, radius=5,
+                      style="secondary", parent_bg=CARD, font=("Segoe UI", 9), command=self._select_none).pack(side="left", padx=(0, 10))
+
+        self.counter_var = tk.StringVar(value="0 of 0 selected")
+        ttk.Label(toolbar_card, textvariable=self.counter_var, style="Muted.TLabel").pack(side="left")
+
+        # Search box on right
+        self.search_var = tk.StringVar()
+        self.search_entry = ttk.Entry(toolbar_card, textvariable=self.search_var, font=("Segoe UI", 9), width=22)
+        self.search_entry.pack(side="right")
+        self.search_entry.bind("<KeyRelease>", self._on_search_changed)
+        ttk.Label(toolbar_card, text="🔍", style="Muted.TLabel").pack(side="right", padx=(0, 4))
+
+        # Track list Treeview (in Card.TFrame)
+        table_card = ttk.Frame(self.coll_view, style="Card.TFrame", padding=2)
+        table_card.pack(fill="both", expand=True, pady=(0, 6))
+
+        tree_scroll = ttk.Scrollbar(table_card, orient="vertical")
+        tree_scroll.pack(side="right", fill="y")
+
+        columns = ("check", "num", "title", "artist", "time", "status")
+        self.tree = ttk.Treeview(table_card, columns=columns, show="headings",
+                                 yscrollcommand=tree_scroll.set, selectmode="extended")
+        tree_scroll.config(command=self.tree.yview)
+
+        self.tree.heading("check", text="☐", command=self._toggle_all_tracks)
+        self.tree.column("check", width=38, minwidth=35, stretch=False, anchor="center")
+
+        self.tree.heading("num", text="#", command=self._toggle_all_tracks)
+        self.tree.column("num", width=42, minwidth=35, stretch=False, anchor="center")
+
+        self.tree.heading("title", text="Title")
+        self.tree.column("title", width=280, minwidth=180, stretch=True)
+
+        self.tree.heading("artist", text="Artists")
+        self.tree.column("artist", width=200, minwidth=140, stretch=True)
+
+        self.tree.heading("time", text="Time")
+        self.tree.column("time", width=65, minwidth=55, stretch=False, anchor="center")
+
+        self.tree.heading("status", text="Status")
+        self.tree.column("status", width=120, minwidth=95, stretch=False, anchor="center")
+
+        self.tree.tag_configure("have", foreground=MUTED)
+        self.tree.tag_configure("waiting", foreground=TEXT)
+        self.tree.tag_configure("downloading", foreground=ACCENT)
+        self.tree.tag_configure("done", foreground=SUCCESS)
+        self.tree.tag_configure("review", foreground=WARNING)
+        self.tree.tag_configure("failed", foreground=ERROR)
+
+        self.tree.bind("<Button-1>", self._on_tree_click)
+        self.tree.bind("<space>", self._on_tree_space)
+        self.tree.pack(side="left", fill="both", expand=True)
+
+        # Options Row under table
+        options_row = ttk.Frame(self.coll_view, style="TFrame")
+        options_row.pack(fill="x", pady=(2, 0))
+
+        self.subfolder_var = tk.BooleanVar(value=True)
+        subfolder_chk = ttk.Checkbutton(options_row, text="Save in a folder named after album/playlist",
+                                        variable=self.subfolder_var, style="TCheckbutton")
+        subfolder_chk.pack(side="left", padx=(2, 16))
+
+        self.zip_var = tk.BooleanVar(value=False)
+        zip_chk = ttk.Checkbutton(options_row, text="Also create a ZIP",
+                                  variable=self.zip_var, style="TCheckbutton")
+        zip_chk.pack(side="left")
+
+        self.dl_selected_btn = RoundedButton(options_row, text="Download Selected (0)", width=200, height=36,
+                                             radius=8, style="primary", parent_bg=BG,
+                                             command=self.on_download_selected_click)
+        self.dl_selected_btn.configure(state="disabled")
+        self.dl_selected_btn.pack(side="right")
+
 
     def toggle_details(self):
         self.log_details_visible = not self.log_details_visible
@@ -652,41 +833,392 @@ class App(tk.Tk):
             self.status_var.set(f"Queued: {artist} - {title} ({q_len} waiting)")
             self.log_msg(f"Queued: {artist} - {title} ({q_len} in queue)")
 
-    def on_link_download_click(self):
+    def _link_entry_focus_in(self, event=None):
+        if self.link_var.get().strip() == "Paste Spotify link here…":
+            self.link_var.set("")
+
+    def _link_entry_focus_out(self, event=None):
+        if not self.link_var.get().strip():
+            self.link_var.set("Paste Spotify link here…")
+
+    def _on_tab_changed(self, event=None):
+        try:
+            selected_tab = self.notebook.select()
+            if selected_tab == str(self.tab_link):
+                self._check_clipboard_for_link()
+        except Exception:
+            pass
+
+    def _check_clipboard_for_link(self):
+        try:
+            clip = self.clipboard_get().strip()
+        except Exception:
+            return
+        kind, _ = core.parse_spotify_url(clip)
+        current = self.link_var.get().strip()
+        if kind and clip != current and clip != getattr(self, "_dismissed_clip", ""):
+            kind_label = {"track": "Track", "album": "Album", "playlist": "Playlist"}.get(kind, "Link")
+            self.clip_banner_var.set(f"Spotify {kind_label} link found on clipboard — Use it?")
+            self.pending_clip_url = clip
+            self.clip_banner.pack(fill="x", pady=(4, 0))
+
+    def _apply_clipboard_link(self):
+        if hasattr(self, "pending_clip_url") and self.pending_clip_url:
+            self.link_var.set(self.pending_clip_url)
+            self._dismiss_clipboard_banner()
+
+    def _dismiss_clipboard_banner(self):
+        self._dismissed_clip = getattr(self, "pending_clip_url", "")
+        self.clip_banner.pack_forget()
+
+    def _make_collection_placeholder_cover(self, size=140):
+        im = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        d = ImageDraw.Draw(im)
+        d.rounded_rectangle([(1, 1), (size - 2, size - 2)], radius=12, fill=CARD, outline=BORDER, width=2)
+        try:
+            font_note = ImageFont.truetype("seguisym.ttf", 36)
+        except Exception:
+            font_note = ImageFont.load_default()
+        d.text((size // 2, size // 2), "♫", fill=ACCENT, font=font_note, anchor="mm")
+        return ImageTk.PhotoImage(im)
+
+    def _fetch_and_show_collection_cover(self, cover_url, size=140):
+        self.coll_cover_img = self.coll_placeholder_img
+        self.coll_cover_label.configure(image=self.coll_placeholder_img)
+        if not cover_url:
+            return
+
+        def work():
+            try:
+                req = urllib.request.Request(cover_url, headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0 Safari/537.36"
+                })
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    raw = resp.read()
+                im = Image.open(io.BytesIO(raw)).convert("RGBA")
+                im = im.resize((size, size), Image.Resampling.LANCZOS)
+                mask = Image.new("L", (size, size), 0)
+                d = ImageDraw.Draw(mask)
+                d.rounded_rectangle([(0, 0), (size - 1, size - 1)], radius=12, fill=255)
+
+                rounded = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+                rounded.paste(im, (0, 0), mask=mask)
+
+                border_im = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+                db = ImageDraw.Draw(border_im)
+                db.rounded_rectangle([(1, 1), (size - 2, size - 2)], radius=12, outline=ACCENT, width=2)
+                out = Image.alpha_composite(rounded, border_im)
+                photo = ImageTk.PhotoImage(out)
+                self.q.put(("collection_cover_ready", photo))
+            except Exception:
+                pass
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def on_fetch_click(self):
         url = self.link_var.get().strip()
-        if url == "Paste Spotify link here…" or not url:
+        if not url or url == "Paste Spotify link here…":
             messagebox.showwarning("No Link", "Please paste a Spotify track, album, or playlist link first.")
             return
+
         kind, sid = core.parse_spotify_url(url)
         if not kind:
-            messagebox.showerror("Invalid Link", "That doesn't look like a Spotify track/album/playlist URL.\n\nExpected: https://open.spotify.com/...")
+            messagebox.showerror("Invalid Link", "That doesn't look like a valid Spotify track/album/playlist URL.\n\nExpected: https://open.spotify.com/...")
             return
+
+        self.fetch_btn.configure(state="disabled")
+        self.fetch_btn.set_text("Fetching…")
+        self.empty_card.pack_forget()
+        self.coll_view.pack_forget()
+        self.loading_sub_label.configure(text=f"Reading Spotify {kind} metadata…")
+        self.loading_card.pack(fill="both", expand=True)
+        self.status_var.set(f"Reading {kind} link…")
+        self.log_msg(f"Fetching collection from Spotify: {url}")
+
+        def work():
+            try:
+                coll = fetch_collection(self.spotdl_exe, url)
+                self.q.put(("collection_fetched", (url, coll)))
+            except Exception as e:
+                self.q.put(("collection_fetched", (url, None)))
+                self.q.put(("log", f"Error fetching collection: {e}"))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_collection_fetched(self, url, coll):
+        self.fetch_btn.configure(state="normal")
+        self.fetch_btn.set_text("🔍  Fetch")
+        self.loading_card.pack_forget()
+
+        if not coll or not coll.get("tracks"):
+            self.empty_label.configure(text="Failed to fetch Spotify collection. Please verify the link and internet connection.")
+            self.empty_card.pack(fill="both", expand=True)
+            self.status_var.set("Failed to fetch link.")
+            self.log_msg(f"Failed to fetch metadata for: {url}")
+            return
+
+        self.current_collection = coll
+        self.empty_card.pack_forget()
+        self.coll_view.pack(fill="both", expand=True)
+
+        tracks = coll.get("tracks", [])
+        kind = coll.get("kind", "collection")
+        name = coll.get("name", "Spotify Collection")
+        owner = coll.get("owner", "")
+        cover_url = coll.get("cover_url", "")
+        total = len(tracks)
+
+        kind_badge = f"{kind.upper()} • {total} TRACKS" if kind != "track" else "TRACK"
+        self.coll_badge_var.set(kind_badge)
+        self.coll_title_var.set(name)
+        self.coll_owner_var.set(f"By {owner}" if owner else "")
+
+        if total == 100:
+            self.coll_note_label.pack(anchor="w", pady=(2, 0))
+        else:
+            self.coll_note_label.pack_forget()
+
+        # Load cover
+        self._fetch_and_show_collection_cover(cover_url, 140)
+
+        # Build track_data & populate
+        folder = self.folder_var.get().strip()
+        if self.subfolder_var.get() and kind in ("album", "playlist"):
+            eff_folder = os.path.join(folder, core.sanitize_filename(name))
+        else:
+            eff_folder = folder
+
+        self.track_data = {}
+        for idx, t in enumerate(tracks):
+            tid = t.get("song_id") or f"track_{idx}"
+            title = t.get("name", "")
+            art_list = t.get("artists", [])
+            artist_str = ", ".join(art_list) if isinstance(art_list, list) else str(art_list)
+            exists = core.song_file_exists(eff_folder, artist_str, title)
+            if exists:
+                status = "Have"
+                checked = False
+                tag = "have"
+            else:
+                status = "Waiting"
+                checked = True
+                tag = "waiting"
+
+            self.track_data[tid] = {
+                "num": idx + 1,
+                "checked": checked,
+                "status": status,
+                "tag": tag,
+                "track": t,
+            }
+
+        self.search_var.set("")
+        self._refresh_tree_display()
+        self._update_counter_and_btn()
+        self.status_var.set(f"Loaded {total} tracks from {kind.capitalize()}.")
+        self.log_msg(f"Fetched {total} tracks from Spotify: {name}")
+
+    def _refresh_tree_display(self):
+        q = self.search_var.get().strip().lower()
+        self.tree.delete(*self.tree.get_children())
+        for iid, data in self.track_data.items():
+            t = data["track"]
+            title = t.get("name", "").lower()
+            artists = " ".join(t.get("artists", [])).lower() if isinstance(t.get("artists"), list) else str(t.get("artists", "")).lower()
+            if not q or q in title or q in artists:
+                char = "☑" if data["checked"] else "☐"
+                time_str = f"{t.get('duration', 0) // 60}:{t.get('duration', 0) % 60:02d}"
+                artist_str = ", ".join(t.get("artists", [])) if isinstance(t.get("artists"), list) else str(t.get("artists", ""))
+                self.tree.insert("", "end", iid=iid,
+                                 values=(char, str(data["num"]), t.get("name", ""), artist_str, time_str, data["status"]),
+                                 tags=(data["tag"],))
+
+    def _toggle_track(self, iid):
+        data = self.track_data.get(iid)
+        if not data:
+            return
+        data["checked"] = not data["checked"]
+        char = "☑" if data["checked"] else "☐"
+        vals = list(self.tree.item(iid, "values"))
+        vals[0] = char
+        self.tree.item(iid, values=vals)
+        self._update_counter_and_btn()
+
+    def _toggle_all_tracks(self):
+        any_unchecked = any(not d["checked"] for d in self.track_data.values())
+        target = any_unchecked
+        char = "☑" if target else "☐"
+        for iid, data in self.track_data.items():
+            data["checked"] = target
+            if self.tree.exists(iid):
+                vals = list(self.tree.item(iid, "values"))
+                vals[0] = char
+                self.tree.item(iid, values=vals)
+        self._update_counter_and_btn()
+
+    def _select_all(self):
+        for iid, data in self.track_data.items():
+            data["checked"] = True
+            if self.tree.exists(iid):
+                vals = list(self.tree.item(iid, "values"))
+                vals[0] = "☑"
+                self.tree.item(iid, values=vals)
+        self._update_counter_and_btn()
+
+    def _select_only_new(self):
+        for iid, data in self.track_data.items():
+            is_have = data.get("status") == "Have"
+            data["checked"] = not is_have
+            if self.tree.exists(iid):
+                vals = list(self.tree.item(iid, "values"))
+                vals[0] = "☐" if is_have else "☑"
+                self.tree.item(iid, values=vals)
+        self._update_counter_and_btn()
+
+    def _select_none(self):
+        for iid, data in self.track_data.items():
+            data["checked"] = False
+            if self.tree.exists(iid):
+                vals = list(self.tree.item(iid, "values"))
+                vals[0] = "☐"
+                self.tree.item(iid, values=vals)
+        self._update_counter_and_btn()
+
+    def _on_search_changed(self, event=None):
+        self._refresh_tree_display()
+
+    def _on_tree_click(self, event):
+        region = self.tree.identify_region(event.x, event.y)
+        col = self.tree.identify_column(event.x)
+        if region == "heading":
+            if col in ("#1", "#2"):
+                self._toggle_all_tracks()
+            return
+        row_id = self.tree.identify_row(event.y)
+        if not row_id:
+            return
+
+        if (event.state & 0x0001) and getattr(self, "_last_clicked_iid", None):
+            self._range_select(self._last_clicked_iid, row_id)
+            return
+
+        self._last_clicked_iid = row_id
+        self._toggle_track(row_id)
+
+    def _on_tree_space(self, event):
+        sel = self.tree.selection()
+        if sel:
+            for iid in sel:
+                self._toggle_track(iid)
+        return "break"
+
+    def _range_select(self, from_iid, to_iid):
+        all_iids = list(self.track_data.keys())
+        try:
+            idx1 = all_iids.index(from_iid)
+            idx2 = all_iids.index(to_iid)
+        except ValueError:
+            return
+        start = min(idx1, idx2)
+        end = max(idx1, idx2)
+        target_state = self.track_data.get(from_iid, {}).get("checked", True)
+        for i in range(start, end + 1):
+            iid = all_iids[i]
+            if iid in self.track_data:
+                self.track_data[iid]["checked"] = target_state
+                if self.tree.exists(iid):
+                    char = "☑" if target_state else "☐"
+                    vals = list(self.tree.item(iid, "values"))
+                    vals[0] = char
+                    self.tree.item(iid, values=vals)
+        self._update_counter_and_btn()
+
+    def _update_counter_and_btn(self):
+        total = len(self.track_data)
+        checked_count = sum(1 for d in self.track_data.values() if d["checked"])
+        self.counter_var.set(f"{checked_count} of {total} selected")
+        self.dl_selected_btn.set_text(f"Download Selected ({checked_count})")
+        if checked_count > 0 and not self.link_busy:
+            self.dl_selected_btn.configure(state="normal")
+        else:
+            self.dl_selected_btn.configure(state="disabled")
+
+    def on_download_selected_click(self):
+        if not self.current_collection:
+            return
+        selected_ids = [tid for tid, d in self.track_data.items() if d["checked"]]
+        if not selected_ids:
+            messagebox.showinfo("No Selection", "Please select at least one track to download.")
+            return
+
         folder = self._precheck()
         if not folder:
             return
-        if self.link_busy:
-            messagebox.showinfo("Busy", "A link download is already in progress. Wait for it to finish.")
-            return
-        self._start_link_job(url, kind, folder)
 
-    def _start_link_job(self, url, kind, folder):
+        if self.link_busy:
+            messagebox.showinfo("Busy", "A download is already in progress.")
+            return
+
         self.link_busy = True
-        self.link_dl_btn.configure(state="disabled")
+        self.link_cancelled = False
+        self.dl_selected_btn.configure(state="disabled")
         self.link_cancel_btn.configure(state="normal")
-        kind_label = {"track": "Track", "album": "Album", "playlist": "Playlist"}.get(kind, kind.capitalize())
-        self.link_status_var.set(f"Starting {kind_label} download…")
-        self.log_msg(f"--- Link download: {kind_label} — {url}")
+        self.open_done_folder_btn.pack_forget()
+        self.show_zip_btn.pack_forget()
+
+        for tid in selected_ids:
+            d = self.track_data.get(tid)
+            if d and d["status"] not in ("✓ Done", "⚠ Needs review"):
+                d["status"] = "Waiting"
+                d["tag"] = "waiting"
+        self._refresh_tree_display()
+
+        url = self.link_var.get().strip()
+        options = {
+            "subfolder": self.subfolder_var.get(),
+            "create_zip": self.zip_var.get(),
+        }
 
         self.playlist_dl = PlaylistDownloader(self.ytdlp_cmd, self.spotdl_exe, self.q)
-        self.playlist_dl.start(url, folder)
-
+        self.playlist_dl.start(url, folder, selected_ids, options, collection_info=self.current_collection)
+        self.log_msg(f"Started download for {len(selected_ids)} tracks...")
 
     def on_link_cancel_click(self):
         if self.playlist_dl:
+            self.link_cancelled = True
             self.playlist_dl.stop()
             self.log_msg("Link download cancel requested…")
-            self.link_status_var.set("Cancelling download…")
+            self.status_var.set("Cancelling download…")
         self.link_cancel_btn.configure(state="disabled")
+
+    def _create_zip_from_finished(self, folder, coll_name, files):
+        def work():
+            self.q.put(("log", "Creating ZIP archive from finished tracks…"))
+            zip_dir = os.path.dirname(folder) if self.subfolder_var.get() else folder
+            created = create_collection_zip(zip_dir, coll_name, files)
+            if created:
+                self.q.put(("zip_created", created))
+            else:
+                self.q.put(("log", "Failed to create ZIP archive."))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _open_done_folder(self):
+        folder = getattr(self, "_last_effective_folder", "") or self.folder_var.get().strip()
+        if folder and os.path.isdir(folder):
+            try:
+                os.startfile(folder)
+            except Exception as e:
+                self.log_msg(f"Could not open folder: {e}")
+
+    def _show_done_zip(self):
+        z = getattr(self, "_last_created_zip", "")
+        if z and os.path.isfile(z):
+            try:
+                subprocess.Popen(["explorer", f"/select,{os.path.normpath(z)}"])
+            except Exception as e:
+                self.log_msg(f"Could not show zip: {e}")
+
 
     def _process_next_job(self):
         if self.busy:
@@ -887,9 +1419,43 @@ class App(tk.Tk):
                         if self.active_job:
                             q_info = f" ({len(self.download_queue)} waiting)" if self.download_queue else ""
                             self.status_var.set(f"Downloading: {self.active_job['title']} - {pct}%{q_info}")
+                elif kind == "collection_fetched":
+                    url, coll = val
+                    self._on_collection_fetched(url, coll)
+                elif kind == "collection_cover_ready":
+                    self.coll_cover_img = val
+                    self.coll_cover_label.configure(image=val)
+                elif kind == "zip_created":
+                    self._last_created_zip = val
+                    self.show_zip_btn.pack(side="right", padx=(4, 0))
+                    self.status_var.set(f"ZIP created: {os.path.basename(val)}")
+                    self.log_msg(f"ZIP created: {val}")
+                elif kind == "link_track_status":
+                    tid, status_text = val
+                    if tid in self.track_data:
+                        self.track_data[tid]["status"] = status_text
+                        tag = "waiting"
+                        if status_text == "Downloading":
+                            tag = "downloading"
+                        elif "Done" in status_text or "✓" in status_text:
+                            tag = "done"
+                        elif "review" in status_text or "⚠" in status_text:
+                            tag = "review"
+                        elif "Not found" in status_text or "Failed" in status_text or "✗" in status_text:
+                            tag = "failed"
+                        self.track_data[tid]["tag"] = tag
+                        if hasattr(self, "tree") and self.tree.exists(tid):
+                            vals = list(self.tree.item(tid, "values"))
+                            vals[5] = status_text
+                            self.tree.item(tid, values=vals, tags=(tag,))
+                            self.tree.see(tid)
                 elif kind == "link_progress":
                     status, done_n, total, label = val
-                    self.link_status_var.set(label)
+                    self.status_var.set(label)
+                    if total > 0:
+                        pct = int((done_n / total) * 100)
+                        self.bar.stop()
+                        self.bar.configure(mode="determinate", value=pct)
                 elif kind == "link_line":
                     self.log_msg(val)
                 elif kind == "job_done":
@@ -902,24 +1468,50 @@ class App(tk.Tk):
                     self.busy = False
                     self._process_next_job()
                 elif kind == "link_job_done":
-                    url, lkind, rc, summary = val
+                    url, lkind, rc, summary, *extra = val
+                    effective_folder = extra[0] if len(extra) > 0 else ""
+                    created_zip = extra[1] if len(extra) > 1 else None
+                    finished_files = extra[2] if len(extra) > 2 else []
+                    was_cancelled = extra[3] if len(extra) > 3 else False
+                    coll_name = extra[4] if len(extra) > 4 else ""
+
                     self.link_busy = False
-                    self.link_dl_btn.configure(state="normal")
                     self.link_cancel_btn.configure(state="disabled")
+                    self._update_counter_and_btn()
+                    self._last_effective_folder = effective_folder
+                    self._last_created_zip = created_zip
+                    self._last_finished_files = finished_files
+
+                    if effective_folder and os.path.isdir(effective_folder):
+                        self.open_done_folder_btn.pack(side="right", padx=(4, 0))
+                    if created_zip and os.path.isfile(created_zip):
+                        self.show_zip_btn.pack(side="right", padx=(4, 0))
+
                     kind_label = {"track": "Track", "album": "Album", "playlist": "Playlist"}.get(lkind, lkind.capitalize())
-                    if rc == 0:
-                        self.link_status_var.set(f"{kind_label} done: {summary} ✓")
+                    if was_cancelled or self.link_cancelled:
+                        self.status_var.set(f"Cancelled: {summary}")
+                        self.log_msg(f"Cancelled: {kind_label} — {summary} — {url}")
+                        if self.zip_var.get() and finished_files and not created_zip:
+                            ask = messagebox.askyesno("Create ZIP?",
+                                "Download was cancelled. Would you like to create a ZIP archive from the songs that finished?")
+                            if ask:
+                                self._create_zip_from_finished(effective_folder, coll_name or kind_label, finished_files)
+                    elif rc == 0:
+                        self.status_var.set(f"Done: {summary} ✓")
                         self.log_msg(f"SUCCESS: {kind_label} — {summary} — {url}")
+                        self.bar.stop()
+                        self.bar.configure(mode="determinate", value=100)
                     else:
-                        self.link_status_var.set(f"{kind_label} complete: {summary}")
+                        self.status_var.set(f"Complete: {summary}")
                         self.log_msg(f"Completed with notes: {kind_label} — {summary} — {url}")
                 elif kind == "link_job_fail":
                     url, err = val
                     self.link_busy = False
-                    self.link_dl_btn.configure(state="normal")
                     self.link_cancel_btn.configure(state="disabled")
-                    self.link_status_var.set(f"Error: {err[:80]}")
+                    self._update_counter_and_btn()
+                    self.status_var.set(f"Error: {err[:80]}")
                     self.log_msg(f"Link download error: {err}")
+
         except queue.Empty:
             pass
 
