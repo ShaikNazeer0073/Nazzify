@@ -192,6 +192,112 @@ def fetch_spotify_embed_metadata(url: str) -> list[dict]:
         return []
 
 
+def fetch_collection(spotdl_exe: str, url: str) -> dict | None:
+    """
+    Fetch complete Spotify collection metadata (track, album, or playlist) WITHOUT downloading audio.
+    Returns dict:
+      kind: 'track' | 'album' | 'playlist'
+      name: collection title
+      owner: artist or playlist owner name
+      cover_url: high-res cover image URL
+      tracks: list of track dicts with name, artists, album_name, duration, cover_url, song_id, isrc
+      total: number of tracks
+    """
+    m = re.search(r"(track|album|playlist)/([A-Za-z0-9]+)", url)
+    if not m:
+        return None
+    kind, sid = m.group(1).lower(), m.group(2)
+    embed_url = f"https://open.spotify.com/embed/{kind}/{sid}"
+    try:
+        req = urllib.request.Request(embed_url, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9",
+        })
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            html = resp.read().decode("utf-8", "replace")
+        sm = re.search(r'<script id=.__NEXT_DATA__.[^>]*>(.*?)</script>', html)
+        if sm:
+            data = json.loads(sm.group(1))
+            entity = data.get("props", {}).get("pageProps", {}).get("state", {}).get("data", {}).get("entity", {})
+            if entity:
+                images = entity.get("visualIdentity", {}).get("image", [])
+                cover_url = ""
+                if images and isinstance(images, list):
+                    sorted_imgs = sorted(images, key=lambda x: x.get("maxHeight", 0), reverse=True)
+                    cover_url = sorted_imgs[0].get("url", "")
+
+                coll_name = entity.get("title") or entity.get("name") or "Spotify"
+                owner = entity.get("subtitle") or ""
+
+                tracks = []
+                if kind == "track":
+                    raw_artists = entity.get("artists") or []
+                    if isinstance(raw_artists, list):
+                        art_names = [a.get("name", "") for a in raw_artists if isinstance(a, dict) and a.get("name")]
+                    else:
+                        art_names = [str(raw_artists)]
+                    if not owner:
+                        owner = ", ".join(art_names)
+                    dur_ms = entity.get("duration") or 0
+                    tracks.append({
+                        "name": coll_name,
+                        "artists": art_names,
+                        "album_name": entity.get("album", {}).get("name") if isinstance(entity.get("album"), dict) else coll_name,
+                        "duration": int(dur_ms) // 1000 if dur_ms else 0,
+                        "cover_url": cover_url,
+                        "song_id": sid,
+                        "isrc": "",
+                        "list_name": coll_name,
+                    })
+                else:
+                    raw_track_list = entity.get("trackList", [])
+                    for t in raw_track_list:
+                        t_title = t.get("title") or t.get("name") or ""
+                        sub = t.get("subtitle") or ""
+                        art_names = [a.strip() for a in re.split(r"[,/\u00a0]+", sub) if a.strip()]
+                        dur_ms = t.get("duration") or 0
+                        tid = t.get("uri", "").split(":")[-1] or t.get("uid", "")
+                        tracks.append({
+                            "name": t_title,
+                            "artists": art_names,
+                            "album_name": coll_name if kind == "album" else "",
+                            "duration": int(dur_ms) // 1000 if dur_ms else 0,
+                            "cover_url": cover_url,
+                            "song_id": tid,
+                            "isrc": "",
+                            "list_name": coll_name,
+                        })
+
+                return {
+                    "kind": kind,
+                    "name": coll_name,
+                    "owner": owner,
+                    "cover_url": cover_url,
+                    "tracks": tracks,
+                    "total": len(tracks),
+                }
+    except Exception:
+        pass
+
+    # Fallback to spotdl save
+    tracks = fetch_metadata(spotdl_exe, url)
+    if not tracks:
+        return None
+    t0 = tracks[0]
+    coll_name = t0.get("album_name") or t0.get("list_name") or kind.capitalize()
+    artists = t0.get("artists") or []
+    owner = ", ".join(artists) if isinstance(artists, list) else str(artists)
+    cover_url = t0.get("cover_url") or ""
+    return {
+        "kind": kind,
+        "name": coll_name,
+        "owner": owner,
+        "cover_url": cover_url,
+        "tracks": tracks,
+        "total": len(tracks),
+    }
+
+
 def fetch_metadata(spotdl_exe: str, url: str) -> list[dict]:
     """
     Fetch Spotify track metadata.
@@ -470,6 +576,49 @@ def _download_track(
     return "failed", ""
 
 
+def create_collection_zip(dest_dir: str, collection_name: str, file_paths: list[str]) -> str | None:
+    """
+    Create a ZIP archive of finished audio files using ZIP_STORED and allowZip64=True.
+    Writes to .zip.part temporary file and atomically renames.
+    Handles existing files by appending (2), (3), etc.
+    """
+    import zipfile
+    safe_name = core.sanitize_filename(collection_name) or "Collection"
+    base_zip = os.path.join(dest_dir, f"{safe_name}.zip")
+    final_zip = base_zip
+    counter = 2
+    while os.path.exists(final_zip):
+        final_zip = os.path.join(dest_dir, f"{safe_name} ({counter}).zip")
+        counter += 1
+
+    part_zip = final_zip + ".part"
+    try:
+        with zipfile.ZipFile(part_zip, "w", compression=zipfile.ZIP_STORED, allowZip64=True) as zf:
+            for fp in file_paths:
+                if fp and os.path.isfile(fp) and os.path.getsize(fp) >= MIN_BYTES:
+                    if STATE_DIR in fp:
+                        continue
+                    arcname = os.path.basename(fp)
+                    zf.write(fp, arcname=arcname)
+        if os.path.exists(part_zip) and os.path.getsize(part_zip) > 0:
+            os.replace(part_zip, final_zip)
+            return final_zip
+        else:
+            if os.path.exists(part_zip):
+                try:
+                    os.remove(part_zip)
+                except OSError:
+                    pass
+            return None
+    except Exception:
+        if os.path.exists(part_zip):
+            try:
+                os.remove(part_zip)
+            except OSError:
+                pass
+        return None
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Public PlaylistDownloader Engine
 # ══════════════════════════════════════════════════════════════════════════════
@@ -487,11 +636,18 @@ class PlaylistDownloader:
         self._thread: threading.Thread | None = None
         self._state_lock = threading.Lock()
 
-    def start(self, url: str, folder: str):
-        """Begin or resume download asynchronously."""
+    def fetch_collection(self, url: str) -> dict | None:
+        """Fetch metadata without downloading audio."""
+        return fetch_collection(self.spotdl_exe, url)
+
+    def start(self, url: str, folder: str, selected_track_ids: list[str] | set[str] | None = None, options: dict | None = None):
+        """Begin or resume download asynchronously for selected tracks."""
         self._stop.clear()
         self._thread = threading.Thread(
-            target=self._run, args=(url, folder), daemon=True, name="PlaylistDL"
+            target=self._run,
+            args=(url, folder, selected_track_ids, options or {}),
+            daemon=True,
+            name="PlaylistDL",
         )
         self._thread.start()
 
@@ -499,39 +655,41 @@ class PlaylistDownloader:
         """Signal all workers to stop cleanly."""
         self._stop.set()
 
-
     def _emit(self, kind: str, val):
         self.q.put((kind, val))
 
     def _log(self, msg: str):
         self._emit("link_line", msg)
 
-    def _run(self, url: str, folder: str):
+    def _run(self, url: str, folder: str, selected_track_ids=None, options=None):
+        options = options or {}
         stop = self._stop
         kind, _ = core.parse_spotify_url(url)
         kind_label = {"track": "Track", "album": "Album", "playlist": "Playlist"}.get(kind or "", "Link")
 
         # ── Phase 1: Fetch Spotify Metadata ──────────────────────────────────
         self._emit("link_progress", ("fetching", 0, 0, f"Fetching {kind_label} metadata from Spotify…"))
-        tracks_raw = fetch_metadata(self.spotdl_exe, url)
+        coll_info = fetch_collection(self.spotdl_exe, url)
 
-        if not tracks_raw:
+        if not coll_info or not coll_info.get("tracks"):
             self._emit("link_progress", ("error", 0, 0,
                 "Could not fetch track list from Spotify. Please check connection and link."))
-            self._emit("link_job_done", (url, kind or "link", 1, "metadata_fetch_failed"))
+            self._emit("link_job_done", (url, kind or "link", 1, "metadata_fetch_failed", folder, None))
             return
 
-        # ── Phase 2: Build / Merge Persistent State ──────────────────────────
-        state = load_state(folder, url)
-        state["url"] = url
+        tracks_raw = coll_info["tracks"]
+        coll_name = coll_info.get("name") or kind_label
 
-        coll_name = kind_label
-        if tracks_raw:
-            t0 = tracks_raw[0]
-            if kind == "album":
-                coll_name = t0.get("album_name") or kind_label
-            elif kind == "playlist":
-                coll_name = t0.get("list_name") or t0.get("album_name") or kind_label
+        # Subfolder option: Save in a folder named after the album/playlist (default True)
+        effective_folder = folder
+        if options.get("subfolder", True) and kind in ("album", "playlist"):
+            sub_name = core.sanitize_filename(coll_name)
+            effective_folder = os.path.join(folder, sub_name)
+            os.makedirs(effective_folder, exist_ok=True)
+
+        # ── Phase 2: Build / Merge Persistent State ──────────────────────────
+        state = load_state(effective_folder, url)
+        state["url"] = url
         state["name"] = state.get("name") or coll_name
 
         id_to_data: dict[str, dict] = {}
@@ -539,7 +697,12 @@ class PlaylistDownloader:
             tid = td.get("song_id") or td.get("name", "unknown")
             id_to_data[tid] = td
 
+        sel_set = set(selected_track_ids) if selected_track_ids is not None else set(id_to_data.keys())
+
+        # IMPORTANT resume/state fix:
+        # unselected tracks must NOT be saved as "pending" in .nazzify state.
         for tid, td in id_to_data.items():
+            is_selected = tid in sel_set
             if tid not in state["tracks"]:
                 state["tracks"][tid] = {
                     "title": td.get("name", ""),
@@ -547,51 +710,61 @@ class PlaylistDownloader:
                     "duration": td.get("duration", 0),
                     "isrc": td.get("isrc", ""),
                     "cover_url": td.get("cover_url", ""),
-                    "status": "pending",
+                    "status": "pending" if is_selected else "unselected",
                     "output_file": "",
                     "error": "",
                     "attempts": 0,
                 }
             else:
+                ts = state["tracks"][tid]
                 if td.get("cover_url"):
-                    state["tracks"][tid]["cover_url"] = td["cover_url"]
+                    ts["cover_url"] = td["cover_url"]
+                if is_selected:
+                    if ts.get("status") in ("unselected", "failed"):
+                        ts["status"] = "pending"
+                        ts["attempts"] = 0
+                        ts["error"] = ""
+                else:
+                    if ts.get("status") == "pending":
+                        ts["status"] = "unselected"
 
         state["total"] = len(id_to_data)
-        _save_state(folder, url, state, self._state_lock)
+        _save_state(effective_folder, url, state, self._state_lock)
 
-        total = state["total"]
-        self._log(f"Found {total} songs in «{coll_name}»")
-        self._emit("link_progress", ("started", 0, total, f"Found {total} songs in «{coll_name}»"))
-
-        # Build list of pending items
+        # Build list of pending items from selected tracks
         pending = []
-        for tid, ts in state["tracks"].items():
+        for tid in sel_set:
             if stop.is_set():
                 break
+            ts = state["tracks"].get(tid)
+            if not ts:
+                continue
+            td = id_to_data.get(tid)
+            if not td:
+                continue
+
             if ts["status"] == "pending":
-                td = id_to_data.get(tid)
-                if td:
-                    pending.append((tid, ts, td))
+                pending.append((tid, ts, td))
             elif ts["status"] in ("done", "review"):
                 out = ts.get("output_file", "")
                 if not out or not os.path.isfile(out) or os.path.getsize(out) < MIN_BYTES:
                     ts["status"] = "pending"
                     ts["attempts"] = 0
-                    td = id_to_data.get(tid)
-                    if td:
-                        pending.append((tid, ts, td))
+                    pending.append((tid, ts, td))
 
+        total_selected = len(sel_set)
         if not pending:
-            done_n = sum(1 for t in state["tracks"].values() if t["status"] in ("done", "review"))
-            self._emit("link_progress", ("finished", done_n, total, f"All {total} songs already downloaded ✓"))
-            self._emit("link_job_done", (url, kind or "link", 0, "all_already_done"))
+            done_n = sum(1 for tid in sel_set if state["tracks"].get(tid, {}).get("status") in ("done", "review"))
+            self._emit("link_progress", ("finished", done_n, total_selected, f"All {total_selected} selected songs already downloaded ✓"))
+            self._emit("link_job_done", (url, kind or "link", 0, "all_already_done", effective_folder, None))
             return
 
-        self._log(f"{len(pending)} song(s) to download ({total - len(pending)} already downloaded)")
+        self._log(f"{len(pending)} song(s) to download ({total_selected - len(pending)} already downloaded)")
+        self._emit("link_progress", ("started", total_selected - len(pending), total_selected, f"Downloading {len(pending)} of {total_selected} songs…"))
 
         # ── Phase 3: Concurrent Worker Pool (3 workers) ──────────────────────
-        done_count = sum(1 for t in state["tracks"].values() if t["status"] in ("done", "review"))
-        fail_count = sum(1 for t in state["tracks"].values() if t["status"] == "failed")
+        done_count = sum(1 for tid in sel_set if state["tracks"].get(tid, {}).get("status") in ("done", "review"))
+        fail_count = sum(1 for tid in sel_set if state["tracks"].get(tid, {}).get("status") == "failed")
 
         def process_one(item: tuple):
             nonlocal done_count, fail_count
@@ -604,9 +777,10 @@ class PlaylistDownloader:
 
             ts["attempts"] = ts.get("attempts", 0) + 1
             self._log(f"→ Starting: {artist_str} – {name}")
+            self._emit("link_track_status", (tid, "Downloading"))
 
             status, out_path = _download_track(
-                self.ytdlp_cmd, td, folder, stop, self._log
+                self.ytdlp_cmd, td, effective_folder, stop, self._log
             )
 
             # Embed high-resolution Spotify cover
@@ -628,31 +802,46 @@ class PlaylistDownloader:
                 if status in ("done", "review"):
                     done_count += 1
                     marker = "✓" if status == "done" else "⚠"
-                    label = f"{marker} {done_count}/{total} — {name}"
+                    label = f"{marker} {done_count}/{total_selected} — {name}"
                     if status == "review":
                         label += " (needs review)"
+                    self._emit("link_track_status", (tid, "✓ Done" if status == "done" else "⚠ Needs review"))
                 else:
                     fail_count += 1
                     label = f"✗ Failed ({fail_count}/{len(pending)}) — {name}"
+                    self._emit("link_track_status", (tid, "✗ Not found"))
 
-            _save_state(folder, url, state, self._state_lock)
-            self._emit("link_progress", (status, done_count, total, label))
+            _save_state(effective_folder, url, state, self._state_lock)
+            self._emit("link_progress", (status, done_count, total_selected, label))
 
         with ThreadPoolExecutor(max_workers=WORKERS, thread_name_prefix="PDL") as pool:
             list(pool.map(process_one, pending))
 
-        # ── Summary & Completion ─────────────────────────────────────────────
+        # ── ZIP and Summary ──────────────────────────────────────────────────
+        finished_files = []
         with self._state_lock:
-            final_done = sum(1 for t in state["tracks"].values() if t["status"] in ("done", "review"))
-            final_fail = sum(1 for t in state["tracks"].values() if t["status"] == "failed")
-            final_rev  = sum(1 for t in state["tracks"].values() if t["status"] == "review")
+            final_done = sum(1 for tid in sel_set if state["tracks"].get(tid, {}).get("status") in ("done", "review"))
+            final_fail = sum(1 for tid in sel_set if state["tracks"].get(tid, {}).get("status") == "failed")
+            final_rev  = sum(1 for tid in sel_set if state["tracks"].get(tid, {}).get("status") == "review")
+            for tid in sel_set:
+                t = state["tracks"].get(tid)
+                if t and t["status"] in ("done", "review") and t.get("output_file"):
+                    finished_files.append(t["output_file"])
 
-        parts = [f"{final_done}/{total} downloaded"]
+        created_zip = None
+        if options.get("create_zip") and not stop.is_set() and finished_files:
+            self._log("Creating ZIP archive of finished tracks…")
+            zip_dir = folder
+            created_zip = create_collection_zip(zip_dir, coll_name, finished_files)
+            if created_zip:
+                self._log(f"ZIP created: {created_zip}")
+
+        parts = [f"{final_done}/{total_selected} downloaded"]
         if final_fail:
             parts.append(f"{final_fail} not found")
         if final_rev:
             parts.append(f"{final_rev} need review")
         summary = ", ".join(parts)
 
-        self._emit("link_progress", ("finished", final_done, total, summary))
-        self._emit("link_job_done", (url, kind or "link", 0 if final_fail < total else 1, summary))
+        self._emit("link_progress", ("finished", final_done, total_selected, summary))
+        self._emit("link_job_done", (url, kind or "link", 0 if final_fail < total_selected else 1, summary, effective_folder, created_zip))

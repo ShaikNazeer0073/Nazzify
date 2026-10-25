@@ -345,11 +345,15 @@ class App(tk.Tk):
         self.notebook.add(self.tab_link, text="  Link / Playlist  ")
         self.notebook.pack(fill="both", expand=True, pady=(2, 0))
 
-        # Tab 1: NOW PLAYING TAB CONTENT (Big Cover Look)
+        # Tab 1: NOW PLAYING TAB CONTENT — two columns
         self.np_container = ttk.Frame(self.tab_now_playing, style="TFrame")
         self.np_container.pack(fill="both", expand=True, pady=6)
 
-        np_card = ttk.Frame(self.np_container, style="TFrame")
+        # ── LEFT COLUMN: cover + song info + download button ──────────────────
+        left_col = ttk.Frame(self.np_container, style="TFrame")
+        left_col.pack(side="left", fill="both", expand=True, padx=(0, 4))
+
+        np_card = ttk.Frame(left_col, style="TFrame")
         np_card.place(relx=0.5, rely=0.48, anchor="center")
 
         self.placeholder_img = self._make_placeholder_cover(280)
@@ -364,17 +368,62 @@ class App(tk.Tk):
         self.artist_var = tk.StringVar(value="Start playing a song in Spotify.")
 
         self.np_title_lbl = tk.Label(np_card, textvariable=self.song_var, font=("Segoe UI", 20, "bold"),
-                                     fg=TEXT, bg=BG, justify="center", wraplength=640)
+                                     fg=TEXT, bg=BG, justify="center", wraplength=380)
         self.np_title_lbl.pack(pady=(0, 4))
 
         self.np_artist_lbl = tk.Label(np_card, textvariable=self.artist_var, font=("Segoe UI", 12),
-                                      fg=MUTED, bg=BG, justify="center", wraplength=640)
+                                      fg=MUTED, bg=BG, justify="center", wraplength=380)
         self.np_artist_lbl.pack(pady=(0, 18))
 
         self.dl_btn = RoundedButton(np_card, text="⬇   Download", width=280, height=44, radius=10,
                                     style="primary", parent_bg=BG, font=("Segoe UI", 12, "bold"),
                                     command=self.on_download_click)
         self.dl_btn.pack(pady=(0, 4))
+
+        # ── RIGHT COLUMN: download queue panel ───────────────────────────────
+        right_col = ttk.Frame(self.np_container, style="Card.TFrame", width=280)
+        right_col.pack(side="right", fill="y", padx=(4, 0))
+        right_col.pack_propagate(False)
+
+        queue_header = ttk.Frame(right_col, style="Card.TFrame")
+        queue_header.pack(fill="x", padx=12, pady=(12, 4))
+        ttk.Label(queue_header, text="DOWNLOAD QUEUE", style="Muted.TLabel").pack(side="left")
+        self.queue_count_var = tk.StringVar(value="")
+        ttk.Label(queue_header, textvariable=self.queue_count_var, style="Muted.TLabel").pack(side="right")
+
+        # Separator line
+        sep = tk.Frame(right_col, bg=BORDER, height=1)
+        sep.pack(fill="x", padx=12, pady=(0, 6))
+
+        # Scrollable queue list area
+        queue_frame = ttk.Frame(right_col, style="Card.TFrame")
+        queue_frame.pack(fill="both", expand=True, padx=6, pady=(0, 8))
+
+        queue_scroll = ttk.Scrollbar(queue_frame, orient="vertical")
+        queue_scroll.pack(side="right", fill="y")
+
+        self.queue_canvas = tk.Canvas(queue_frame, bg=CARD, highlightthickness=0,
+                                      yscrollcommand=queue_scroll.set)
+        self.queue_canvas.pack(side="left", fill="both", expand=True)
+        queue_scroll.config(command=self.queue_canvas.yview)
+
+        self.queue_inner = tk.Frame(self.queue_canvas, bg=CARD)
+        self._queue_window = self.queue_canvas.create_window((0, 0), window=self.queue_inner, anchor="nw")
+
+        self.queue_inner.bind("<Configure>", lambda e: (
+            self.queue_canvas.configure(scrollregion=self.queue_canvas.bbox("all")),
+            self.queue_canvas.itemconfig(self._queue_window, width=self.queue_canvas.winfo_width())
+        ))
+        self.queue_canvas.bind("<Configure>", lambda e: (
+            self.queue_canvas.itemconfig(self._queue_window, width=e.width)
+        ))
+        self.queue_canvas.bind("<MouseWheel>", lambda e: self.queue_canvas.yview_scroll(
+            int(-1 * (e.delta / 120)), "units"))
+
+        # Empty state label (shown when queue is empty)
+        self.queue_empty_lbl = tk.Label(self.queue_inner, text="No songs in queue",
+                                        font=("Segoe UI", 9), fg=MUTED, bg=CARD)
+        self.queue_empty_lbl.pack(pady=20)
 
         # Tab 2: LINK / PLAYLIST TAB CONTENT
         c3 = self._card(self.tab_link, "DOWNLOAD BY LINK  (track · album · playlist)")
@@ -413,6 +462,62 @@ class App(tk.Tk):
         self.log.insert("end", text + "\n")
         self.log.see("end")
         self.log.configure(state="disabled")
+
+    def _refresh_queue_view(self):
+        """Rebuild the queue panel to reflect current active_job + download_queue."""
+        for w in self.queue_inner.winfo_children():
+            w.destroy()
+
+        items = []
+        if self.active_job:
+            items.append(("active", self.active_job))
+        for job in self.download_queue:
+            items.append(("waiting", job))
+
+        if not items:
+            lbl = tk.Label(self.queue_inner, text="No songs in queue",
+                           font=("Segoe UI", 9), fg=MUTED, bg=CARD)
+            lbl.pack(pady=20)
+            self.queue_count_var.set("")
+            return
+
+        count = len(items)
+        self.queue_count_var.set(f"{count} song{'s' if count != 1 else ''}")
+
+        for idx, (kind, job) in enumerate(items):
+            row = tk.Frame(self.queue_inner, bg=PANEL if kind == "active" else CARD)
+            row.pack(fill="x", padx=4, pady=(0, 2))
+
+            # Status icon / number
+            if kind == "active":
+                badge_txt = "⬇"
+                badge_fg = ACCENT
+            else:
+                badge_txt = str(idx)  # waiting: show position number (1-based for queue items)
+                badge_fg = MUTED
+
+            badge = tk.Label(row, text=badge_txt, font=("Segoe UI", 10, "bold"),
+                             fg=badge_fg, bg=PANEL if kind == "active" else CARD, width=3)
+            badge.pack(side="left", padx=(6, 4), pady=6)
+
+            info = tk.Frame(row, bg=PANEL if kind == "active" else CARD)
+            info.pack(side="left", fill="x", expand=True, pady=4)
+
+            title_fg = TEXT if kind == "active" else MUTED
+            tk.Label(info, text=job["title"], font=("Segoe UI", 9, "bold" if kind == "active" else "normal"),
+                     fg=title_fg, bg=PANEL if kind == "active" else CARD,
+                     anchor="w", wraplength=190).pack(fill="x")
+            tk.Label(info, text=job["artist"], font=("Segoe UI", 8),
+                     fg=MUTED, bg=PANEL if kind == "active" else CARD,
+                     anchor="w").pack(fill="x")
+
+            if kind == "active":
+                status_lbl = tk.Label(row, text="Downloading…", font=("Segoe UI", 8),
+                                      fg=ACCENT, bg=PANEL)
+                status_lbl.pack(side="right", padx=(4, 8))
+
+        # Scroll to top
+        self.queue_canvas.yview_moveto(0)
 
     def save_cfg(self):
         self.cfg["download_folder"] = self.folder_var.get().strip()
@@ -538,6 +643,7 @@ class App(tk.Tk):
             "key": key,
         }
         self.download_queue.append(job)
+        self._refresh_queue_view()
 
         if not self.busy:
             self._process_next_job()
@@ -590,6 +696,7 @@ class App(tk.Tk):
             self.cancel_btn.configure(state="disabled")
             self.bar.stop()
             self.bar.configure(mode="determinate", value=0)
+            self._refresh_queue_view()
             return
 
         job = self.download_queue.pop(0)
@@ -607,6 +714,7 @@ class App(tk.Tk):
         self.bar.start(12)
         self.t0 = time.time()
         self.holder = {"proc": None, "cancelled": False, "timeout": False}
+        self._refresh_queue_view()
 
         q_info = f" ({len(self.download_queue)} waiting)" if self.download_queue else ""
         self.status_var.set(f"Downloading: {job['artist']} - {job['title']}{q_info}")
@@ -757,7 +865,10 @@ class App(tk.Tk):
                 self.bar.configure(mode="determinate", value=0)
 
         self.busy = False
+        self.active_job = None
+        self._refresh_queue_view()
         self._process_next_job()
+
 
     def _poll(self):
         try:
