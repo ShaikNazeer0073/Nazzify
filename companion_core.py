@@ -391,7 +391,7 @@ def parse_progress(line):
 
 def friendly_error(output_text, returncode):
     t = output_text.lower()
-    if any(k in t for k in ("confirm you're not a bot", "sign in to confirm", "bot", "sign in")):
+    if any(k in t for k in ("confirm you're not a bot", "not a bot", "sign in to confirm")):
         return ("YouTube asked for sign-in/bot confirmation. "
                 "Try updating yt-dlp in Command Prompt: pip install -U yt-dlp")
     if "ffmpeg" in t and ("not found" in t or "not installed" in t or "no such file" in t):

@@ -11,15 +11,189 @@ from tkinter import filedialog, messagebox, ttk
 import companion_core as core
 from playlist_downloader import PlaylistDownloader
 
-BG, CARD, FG, MUTED, ACCENT = "#121212", "#1e1e1e", "#f2f2f2", "#9a9a9a", "#1db954"
+from PIL import Image, ImageTk, ImageDraw, ImageFont
+
+BG = "#0B0712"
+PANEL = "#15101F"
+CARD = "#1C1530"
+BORDER = "#2A2140"
+ACCENT = "#8B5CF6"
+ACCENT_HOVER = "#A78BFA"
+ACCENT_DARK = "#6D28D9"
+TEXT = "#F4F0FF"
+MUTED = "#9A90B5"
+SUCCESS = "#34D399"
+WARNING = "#FBBF24"
+ERROR = "#F87171"
+
+
+class RoundedButton(tk.Canvas):
+    """
+    Smooth, anti-aliased rounded button drawn on Tkinter Canvas using Pillow.
+    Supports primary (purple), secondary (card/dark), outline, and danger styles.
+    """
+    def __init__(self, parent, text="", command=None, width=120, height=36, radius=8,
+                 style="primary", parent_bg=CARD, font=("Segoe UI", 10, "bold"),
+                 cursor="hand2", **kwargs):
+        self.parent_bg = parent_bg
+        super().__init__(parent, width=width, height=height, bg=parent_bg,
+                         highlightthickness=0, bd=0, **kwargs)
+        self.text = text
+        self.command = command
+        self.radius = radius
+        self.btn_style = style
+        self.font = font
+        self.btn_cursor = cursor
+        self.state = "normal"
+        self._hover = False
+        self._pressed = False
+        self._img_cache = {}
+
+        self._apply_style(style)
+
+        self.bind("<Enter>", self._on_enter)
+        self.bind("<Leave>", self._on_leave)
+        self.bind("<Button-1>", self._on_press)
+        self.bind("<ButtonRelease-1>", self._on_release)
+        self.bind("<Configure>", self._on_configure)
+        self.redraw()
+
+    def _apply_style(self, style):
+        if style == "primary":
+            self.bg_color = ACCENT
+            self.hover_color = ACCENT_HOVER
+            self.active_color = ACCENT_DARK
+            self.disabled_color = "#2A2140"
+            self.text_color = "#FFFFFF"
+            self.disabled_text = "#6B6280"
+            self.border_color = None
+        elif style == "secondary":
+            self.bg_color = "#2A2140"
+            self.hover_color = "#3B3058"
+            self.active_color = "#201833"
+            self.disabled_color = "#1C1530"
+            self.text_color = "#F4F0FF"
+            self.disabled_text = "#6B6280"
+            self.border_color = None
+        elif style == "outline":
+            self.bg_color = self.parent_bg
+            self.hover_color = "#2A2140"
+            self.active_color = "#1F1830"
+            self.disabled_color = self.parent_bg
+            self.text_color = "#F4F0FF"
+            self.disabled_text = "#6B6280"
+            self.border_color = "#2A2140"
+        elif style == "danger":
+            self.bg_color = "#7F1D1D"
+            self.hover_color = "#991B1B"
+            self.active_color = "#581414"
+            self.disabled_color = "#2A2140"
+            self.text_color = "#FEE2E2"
+            self.disabled_text = "#6B6280"
+            self.border_color = None
+
+    def _on_configure(self, _e):
+        self.redraw()
+
+    def _on_enter(self, _e):
+        if self.state == "normal":
+            self._hover = True
+            super().configure(cursor=self.btn_cursor)
+            self.redraw()
+
+    def _on_leave(self, _e):
+        self._hover = False
+        self._pressed = False
+        self.redraw()
+
+    def _on_press(self, _e):
+        if self.state == "normal":
+            self._pressed = True
+            self.redraw()
+
+    def _on_release(self, _e):
+        if self.state == "normal":
+            was_pressed = self._pressed
+            self._pressed = False
+            self.redraw()
+            if was_pressed and self.command:
+                try:
+                    self.command()
+                except Exception as err:
+                    print(f"Button command error: {err}")
+
+    def configure_state(self, state):
+        self.state = state
+        super().configure(cursor=self.btn_cursor if state == "normal" else "arrow")
+        self.redraw()
+
+    def set_text(self, text):
+        self.text = text
+        self.redraw()
+
+    def configure(self, cnf=None, **kwargs):
+        if cnf is not None:
+            kwargs.update(cnf)
+        if "state" in kwargs:
+            self.configure_state(kwargs.pop("state"))
+        if "text" in kwargs:
+            self.set_text(kwargs.pop("text"))
+        if "command" in kwargs:
+            self.command = kwargs.pop("command")
+        if kwargs:
+            super().configure(**kwargs)
+
+    config = configure
+
+    def _get_bg_img(self, w, h, fill_col, border_col=None):
+        key = (w, h, self.radius, fill_col, border_col)
+        if key in self._img_cache:
+            return self._img_cache[key]
+        scale = 2
+        im = Image.new("RGBA", (w * scale, h * scale), (0, 0, 0, 0))
+        d = ImageDraw.Draw(im)
+        rect = [(1, 1), (w * scale - 2, h * scale - 2)]
+        d.rounded_rectangle(rect, radius=self.radius * scale, fill=fill_col,
+                            outline=border_col, width=scale if border_col else 0)
+        im = im.resize((w, h), Image.Resampling.LANCZOS)
+        photo = ImageTk.PhotoImage(im)
+        self._img_cache[key] = photo
+        return photo
+
+    def redraw(self):
+        self.delete("all")
+        w = max(self.winfo_width(), int(self["width"]))
+        h = max(self.winfo_height(), int(self["height"]))
+        if w <= 1 or h <= 1:
+            return
+        if self.state == "disabled":
+            fill = self.disabled_color
+            tcol = self.disabled_text
+            border = None
+        elif self._pressed:
+            fill = self.active_color
+            tcol = self.text_color
+            border = self.border_color
+        elif self._hover:
+            fill = self.hover_color
+            tcol = self.text_color
+            border = self.border_color
+        else:
+            fill = self.bg_color
+            tcol = self.text_color
+            border = self.border_color
+
+        img = self._get_bg_img(w, h, fill, border)
+        self.create_image(0, 0, anchor="nw", image=img)
+        self.create_text(w // 2, h // 2, text=self.text, fill=tcol, font=self.font)
 
 
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("SpotDL Companion")
-        self.geometry("740x720")
-        self.minsize(640, 580)
+        self.geometry("900x680")
+        self.minsize(780, 560)
         self.configure(bg=BG)
 
         self.cfg = core.load_config()
@@ -51,39 +225,77 @@ class App(tk.Tk):
             s.theme_use("clam")
         except tk.TclError:
             pass
+        s.configure(".", background=BG, foreground=TEXT, font=("Segoe UI", 10))
         s.configure("TFrame", background=BG)
+        s.configure("Panel.TFrame", background=PANEL)
         s.configure("Card.TFrame", background=CARD)
-        s.configure("TLabel", background=BG, foreground=FG, font=("Segoe UI", 10))
-        s.configure("Card.TLabel", background=CARD, foreground=FG, font=("Segoe UI", 10))
+
+        s.configure("TLabel", background=BG, foreground=TEXT, font=("Segoe UI", 10))
+        s.configure("Panel.TLabel", background=PANEL, foreground=TEXT, font=("Segoe UI", 10))
+        s.configure("Card.TLabel", background=CARD, foreground=TEXT, font=("Segoe UI", 10))
         s.configure("Muted.TLabel", background=CARD, foreground=MUTED, font=("Segoe UI", 9))
-        s.configure("Title.TLabel", background=BG, foreground=ACCENT, font=("Segoe UI", 20, "bold"))
-        s.configure("Song.TLabel", background=CARD, foreground=FG, font=("Segoe UI", 14, "bold"))
-        s.configure("Artist.TLabel", background=CARD, foreground="#b3b3b3", font=("Segoe UI", 11))
-        s.configure("TButton", font=("Segoe UI", 10), padding=6)
-        s.configure("Accent.TButton", font=("Segoe UI", 12, "bold"), padding=10,
-                    background=ACCENT, foreground="#000000")
-        s.map("Accent.TButton", background=[("active", "#1ed760"), ("disabled", "#2a4a35")])
-        s.configure("Green.Horizontal.TProgressbar", troughcolor=CARD, background=ACCENT)
+        s.configure("PanelMuted.TLabel", background=PANEL, foreground=MUTED, font=("Segoe UI", 9))
+        s.configure("Title.TLabel", background=BG, foreground=TEXT, font=("Segoe UI", 18, "bold"))
+        s.configure("Song.TLabel", background=CARD, foreground=TEXT, font=("Segoe UI", 16, "bold"))
+        s.configure("Artist.TLabel", background=CARD, foreground=MUTED, font=("Segoe UI", 11))
+
+        # Notebook & tabs
+        s.configure("TNotebook", background=BG, borderwidth=0)
+        s.configure("TNotebook.Tab", background=PANEL, foreground=MUTED, padding=[20, 8],
+                    font=("Segoe UI", 10, "bold"), borderwidth=0)
+        s.map("TNotebook.Tab",
+              background=[("selected", CARD), ("active", "#22193A")],
+              foreground=[("selected", TEXT), ("active", TEXT)])
+
+        # Entry
+        s.configure("TEntry", fieldbackground=PANEL, foreground=TEXT, insertcolor=TEXT,
+                    bordercolor=BORDER, lightcolor=BORDER, darkcolor=BORDER, padding=6)
+
+        # Progressbar
+        s.configure("Horizontal.TProgressbar", troughcolor=PANEL, background=ACCENT,
+                    bordercolor=BORDER, lightcolor=ACCENT, darkcolor=ACCENT)
+        s.configure("Purple.Horizontal.TProgressbar", troughcolor=PANEL, background=ACCENT,
+                    bordercolor=BORDER, lightcolor=ACCENT, darkcolor=ACCENT)
+
+        # Scrollbar
+        s.configure("TScrollbar", background=BORDER, troughcolor=PANEL, bordercolor=PANEL, arrowcolor=MUTED)
+        s.map("TScrollbar", background=[("active", ACCENT), ("disabled", PANEL)])
+
+        # Treeview
+        s.configure("Treeview", background=PANEL, fieldbackground=PANEL, foreground=TEXT,
+                    borderwidth=0, rowheight=28, font=("Segoe UI", 9))
+        s.configure("Treeview.Heading", background=CARD, foreground=TEXT,
+                    font=("Segoe UI", 9, "bold"), relief="flat", padding=6)
+        s.map("Treeview", background=[("selected", ACCENT)], foreground=[("selected", "#FFFFFF")])
+        s.map("Treeview.Heading", background=[("active", "#261D42")])
+
+        # Checkbutton
+        s.configure("TCheckbutton", background=PANEL, foreground=TEXT, font=("Segoe UI", 9))
+        s.map("TCheckbutton", background=[("active", PANEL)], foreground=[("active", TEXT)])
 
     def _card(self, parent, title):
         outer = ttk.Frame(parent, style="Card.TFrame", padding=14)
         outer.pack(fill="x", pady=6)
-        ttk.Label(outer, text=title, style="Muted.TLabel").pack(anchor="w")
+        if title:
+            ttk.Label(outer, text=title, style="Muted.TLabel").pack(anchor="w")
         return outer
 
     def _build(self):
-        root = ttk.Frame(self, padding=14)
+        root = ttk.Frame(self, padding=16)
         root.pack(fill="both", expand=True)
 
-        ttk.Label(root, text="SpotDL Companion", style="Title.TLabel").pack(anchor="w", pady=(0, 4))
+        header = ttk.Frame(root)
+        header.pack(fill="x", pady=(0, 8))
+        ttk.Label(header, text="SpotDL Companion", style="Title.TLabel").pack(side="left")
+        ttk.Label(header, text="● Fast High-Quality Music Downloader", style="PanelMuted.TLabel").pack(side="left", padx=12, pady=(4, 0))
 
         # 1. LIVE NOW PLAYING CARD
         c = self._card(root, "NOW PLAYING")
         now_row = ttk.Frame(c, style="Card.TFrame")
-        now_row.pack(fill="x", pady=(4, 0))
+        now_row.pack(fill="x", pady=(6, 0))
 
         self.thumb_label = ttk.Label(now_row, style="Card.TLabel")
-        self.thumb_label.pack(side="left", padx=(0, 10))
+        self.thumb_label.pack(side="left", padx=(0, 12))
         self.current_img = None
         self._last_thumb = None
 
@@ -92,12 +304,13 @@ class App(tk.Tk):
 
         self.song_var = tk.StringVar(value="Waiting for Spotify...")
         self.artist_var = tk.StringVar(value="Start playing a song in Spotify.")
-        ttk.Label(text_col, textvariable=self.song_var, style="Song.TLabel", wraplength=540).pack(anchor="w", pady=(2, 2))
-        ttk.Label(text_col, textvariable=self.artist_var, style="Artist.TLabel", wraplength=540).pack(anchor="w")
+        ttk.Label(text_col, textvariable=self.song_var, style="Song.TLabel", wraplength=620).pack(anchor="w", pady=(2, 2))
+        ttk.Label(text_col, textvariable=self.artist_var, style="Artist.TLabel", wraplength=620).pack(anchor="w")
 
         # ONE BIG DOWNLOAD BUTTON
-        self.dl_btn = ttk.Button(c, text="\u2b07   Download", style="Accent.TButton",
-                                 command=self.on_download_click)
+        self.dl_btn = RoundedButton(c, text="⬇   Download", width=160, height=40, radius=8,
+                                    style="primary", parent_bg=CARD, font=("Segoe UI", 11, "bold"),
+                                    command=self.on_download_click)
         self.dl_btn.pack(fill="x", pady=(12, 4))
 
         # 2. SETTINGS CARD
@@ -107,8 +320,10 @@ class App(tk.Tk):
         ttk.Label(row, text="Save to:", style="Card.TLabel").pack(side="left")
         self.folder_var = tk.StringVar(value=self.cfg["download_folder"])
         ttk.Entry(row, textvariable=self.folder_var).pack(side="left", fill="x", expand=True, padx=6)
-        ttk.Button(row, text="Browse...", command=self.browse_folder).pack(side="left")
-        ttk.Button(row, text="Open Folder", command=self.open_folder).pack(side="left", padx=(6, 0))
+        RoundedButton(row, text="Browse...", width=90, height=32, radius=6, style="secondary",
+                      parent_bg=CARD, command=self.browse_folder).pack(side="left")
+        RoundedButton(row, text="Open Folder", width=100, height=32, radius=6, style="secondary",
+                      parent_bg=CARD, command=self.open_folder).pack(side="left", padx=(6, 0))
 
         row2 = ttk.Frame(c2, style="Card.TFrame")
         row2.pack(fill="x", pady=(6, 0))
@@ -124,11 +339,13 @@ class App(tk.Tk):
         row3.pack(fill="x", pady=(8, 2))
         self.status_var = tk.StringVar(value="Ready.")
         ttk.Label(row3, textvariable=self.status_var).pack(side="left")
-        self.cancel_btn = ttk.Button(row3, text="Cancel", command=self.cancel, state="disabled")
+        self.cancel_btn = RoundedButton(row3, text="Cancel", width=80, height=30, radius=6,
+                                        style="secondary", parent_bg=BG, command=self.cancel)
+        self.cancel_btn.configure(state="disabled")
         self.cancel_btn.pack(side="right")
 
-        self.bar = ttk.Progressbar(root, style="Green.Horizontal.TProgressbar", mode="determinate", maximum=100)
-        self.bar.pack(fill="x", pady=(2, 6))
+        self.bar = ttk.Progressbar(root, style="Purple.Horizontal.TProgressbar", mode="determinate", maximum=100)
+        self.bar.pack(fill="x", pady=(4, 8))
 
         # 3b. DOWNLOAD BY LINK CARD
         c3 = self._card(root, "DOWNLOAD BY LINK  (track · album · playlist)")
@@ -140,12 +357,13 @@ class App(tk.Tk):
         self.link_entry.insert(0, "Paste Spotify link here…")
         self.link_entry.bind("<FocusIn>", self._link_entry_focus_in)
         self.link_entry.bind("<FocusOut>", self._link_entry_focus_out)
-        self.link_dl_btn = ttk.Button(link_row, text="⬇  Download", style="Accent.TButton",
-                                      command=self.on_link_download_click)
+        self.link_dl_btn = RoundedButton(link_row, text="⬇  Download", width=120, height=34, radius=6,
+                                         style="primary", parent_bg=CARD, command=self.on_link_download_click)
         self.link_dl_btn.pack(side="left")
 
-        self.link_cancel_btn = ttk.Button(link_row, text="Cancel", state="disabled",
-                                          command=self.on_link_cancel_click)
+        self.link_cancel_btn = RoundedButton(link_row, text="Cancel", width=80, height=34, radius=6,
+                                             style="secondary", parent_bg=CARD, command=self.on_link_cancel_click)
+        self.link_cancel_btn.configure(state="disabled")
         self.link_cancel_btn.pack(side="left", padx=(6, 0))
         self.link_status_var = tk.StringVar(value="")
         ttk.Label(c3, textvariable=self.link_status_var, style="Muted.TLabel").pack(anchor="w", pady=(4, 0))
@@ -153,7 +371,7 @@ class App(tk.Tk):
         # 4. LOG AREA
         logf = ttk.Frame(root)
         logf.pack(fill="both", expand=True)
-        self.log = tk.Text(logf, height=8, bg="#0b0b0b", fg="#d0d0d0", insertbackground="#fff",
+        self.log = tk.Text(logf, height=8, bg=PANEL, fg=TEXT, insertbackground="#fff",
                            font=("Consolas", 9), wrap="word", state="disabled", relief="flat")
         sb = ttk.Scrollbar(logf, command=self.log.yview)
         self.log.configure(yscrollcommand=sb.set)
