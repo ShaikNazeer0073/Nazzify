@@ -5,20 +5,22 @@ SPOTDL COMPANION  (for Windows 10/11)
 
 
 WHAT IT DOES
+1. Now Playing Tab: Shows the song currently playing in the Spotify desktop app with
+   high-resolution album art extracted directly from Windows GSMTC, live download queue,
+   and instant one-click download via yt-dlp.
+2. Link / Playlist Tab: Paste any Spotify track, album, or playlist link to fetch and preview
+   its tracks. Pick exactly the songs you want with the interactive Track Picker, search/filter
+   by title or artist, organize into album/playlist subfolders, and optionally create a ZIP archive.
+3. Persistent Bottom Bar: Live progress, status reporting, quick folder picker, "Open folder",
+   "Show ZIP", and collapsible details log.
 
-Shows the song currently playing in the Spotify desktop app and downloads it with
 
-your existing spotDL. You can also paste a Spotify track / album / playlist link.
+HOW TO RUN
+1. Double-click "Run SpotDL Companion.bat" to launch.
+2. To download live songs: play a song in Spotify and click "Download".
+3. To download albums/playlists: switch to "Link / Playlist", paste a Spotify link, click "Fetch",
+   choose your tracks, and click "Download Selected".
 
-
-
-HOW TO RUN (3 steps)
-
-1. Right-click the ZIP -> "Extract All..." (do NOT run from inside the ZIP).
-
-2. Open the extracted folder and double-click "Run SpotDL Companion.bat".
-
-3. In Spotify play a song -> click "Detect & Download".
 
 
 
