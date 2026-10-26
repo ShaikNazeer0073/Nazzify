@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nazzify</title>
+  <link rel="stylesheet" href="fonts/fonts.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app-container">
+
+    <!-- Top Navigation Header -->
+    <header id="top-nav">
+      <div class="nav-left">
+        <div class="logo">
+          <span class="logo-text">NAZZIFY</span>
+          <span class="logo-dot"></span>
+        </div>
+      </div>
+
+      <nav class="nav-center">
+        <button id="tab-btn-np" class="nav-tab active" data-tab="now-playing">
+          <span class="tab-icon">♫</span> NOW PLAYING
+        </button>
+        <button id="tab-btn-link" class="nav-tab" data-tab="link-playlist">
+          <span class="tab-icon">✦</span> LINK &amp; PLAYLIST
+        </button>
+      </nav>
+
+      <div class="nav-right">
+        <div id="engine-badge" class="engine-pill" title="Backend Downloader Engine">
+          <span class="engine-dot"></span>
+          <span id="engine-text">yt-dlp</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Screens Viewport -->
+    <main id="screens-viewport">
+
+      <!-- SCREEN 1: NOW PLAYING (Split Layout) -->
+      <section id="screen-now-playing" class="screen-view active">
+        <div class="split-layout">
+
+          <!-- Left Violet Panel -->
+          <div class="panel-left-violet">
+            <div class="violet-content">
+              <div class="eyebrow-pill" id="np-eyebrow">NOW PLAYING</div>
+              
+              <h1 id="np-song-title" class="huge-headline">Play a song in Spotify</h1>
+              
+              <div class="np-meta-row">
+                <span id="np-artist-time" class="artist-sub">Start playing music in Spotify to begin.</span>
+              </div>
+
+              <div class="np-action-row">
+                <button id="np-download-btn" class="pill-btn pill-white">
+                  <span class="btn-icon">⬇</span>
+                  <span id="np-download-text">Download</span>
+                </button>
+                <span id="np-quick-status" class="quick-status-text"></span>
+              </div>
+
+              <!-- Download Queue Preview Card -->
+              <div id="queue-card" class="queue-container">
+                <div class="queue-header">
+                  <span class="queue-title">DOWNLOAD QUEUE</span>
+                  <span id="queue-count-badge" class="queue-badge">0</span>
+                </div>
+                <div id="queue-list" class="queue-items-list">
+                  <div class="queue-empty">Queue is clear</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Right Black Panel -->
+          <div class="panel-right-black">
+            <div class="disc-stage">
+              <!-- Glow Aura -->
+              <div id="disc-glow" class="disc-glow-aura"></div>
+
+              <!-- Rotating Cover Circle -->
+              <div id="disc-container" class="disc-circle stopped">
+                <div class="disc-grooves"></div>
+                <!-- Album cover image (hidden when idle) -->
+                <img id="np-cover-img" class="disc-cover" src="" alt="Album Cover" style="display: none;">
+                <!-- Gradient circle placeholder (shown when idle) -->
+                <div id="np-placeholder-circle" class="disc-placeholder-gradient">
+                  <span class="placeholder-icon">♫</span>
+                </div>
+                <!-- Center Spindle Ring -->
+                <div class="disc-center-hole">
+                  <div class="disc-center-dot"></div>
+                </div>
+              </div>
+
+              <!-- Status label below circle -->
+              <div id="np-playback-indicator" class="playback-badge">
+                <span class="playback-dot"></span>
+                <span id="np-playback-text">Ready</span>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+      <!-- SCREEN 2: LINK & PLAYLIST -->
+      <section id="screen-link-playlist" class="screen-view">
+        <div class="link-layout">
+
+          <!-- 1. Link Input Row -->
+          <div class="link-search-row">
+            <div class="pill-input-box">
+              <span class="input-icon">✦</span>
+              <input type="text" id="spotify-link-input" placeholder="Paste a Spotify link" autocomplete="off" spellcheck="false">
+              <button id="link-paste-btn" class="mini-tool-btn" title="Paste from clipboard">Paste</button>
+            </div>
+            <button id="link-fetch-btn" class="pill-btn pill-violet">
+              <span>Fetch</span>
+            </button>
+          </div>
+
+          <!-- Clipboard Discovery Banner -->
+          <div id="clipboard-banner" class="clip-banner" style="display: none;">
+            <div class="clip-text">
+              <span class="clip-star">✦</span>
+              <span id="clip-msg">Spotify link detected on clipboard</span>
+            </div>
+            <div class="clip-actions">
+              <button id="clip-use-btn" class="pill-btn pill-sm pill-violet">Use Link</button>
+              <button id="clip-dismiss-btn" class="pill-btn pill-sm pill-ghost">✕</button>
+            </div>
+          </div>
+
+          <!-- 2. Loading State -->
+          <div id="collection-loading" class="coll-state-box" style="display: none;">
+            <div class="loading-spinner"></div>
+            <div class="loading-title">Reading Spotify collection…</div>
+            <div class="loading-sub">Fetching track list and high-res cover art…</div>
+          </div>
+
+          <!-- 3. Empty State -->
+          <div id="collection-empty" class="coll-state-box">
+            <div class="empty-halo">♫</div>
+            <h2 class="empty-headline">Explore &amp; Download</h2>
+            <p class="empty-sub">Paste any Spotify album, playlist, or single track link above to fetch the tracklist and batch download.</p>
+          </div>
+
+          <!-- 4. Collection Content Area -->
+          <div id="collection-content" class="coll-content-area" style="display: none;">
+
+            <!-- Header Card (Editorial Music Style) -->
+            <div class="coll-header-card">
+              <div class="coll-cover-wrap">
+                <img id="coll-cover-img" class="coll-cover-img" src="" alt="Collection Cover">
+                <div id="coll-cover-placeholder" class="coll-cover-placeholder">♫</div>
+              </div>
+              <div class="coll-info-wrap">
+                <span id="coll-badge" class="coll-type-badge">ALBUM • 8 TRACKS</span>
+                <h2 id="coll-title" class="coll-headline">Album Name</h2>
+                <div id="coll-owner" class="coll-owner-text">By Artist</div>
+              </div>
+            </div>
+
+            <!-- Toolbar Card -->
+            <div class="coll-toolbar-card">
+              <div class="toolbar-left">
+                <button id="btn-select-all" class="tool-btn">Select all</button>
+                <button id="btn-select-new" class="tool-btn">Only new</button>
+                <button id="btn-select-none" class="tool-btn">None</button>
+                <span id="selected-counter" class="counter-text">0 of 0 selected</span>
+              </div>
+              <div class="toolbar-right">
+                <div class="search-box">
+                  <span class="search-icon">🔍</span>
+                  <input type="text" id="track-search-input" placeholder="Search tracks…" autocomplete="off">
+                </div>
+              </div>
+            </div>
+
+            <!-- Track List Table Container -->
+            <div class="track-list-wrapper">
+              <table class="track-table">
+                <thead>
+                  <tr>
+                    <th class="th-check">
+                      <input type="checkbox" id="master-checkbox" title="Select / Deselect All">
+                    </th>
+                    <th class="th-num">#</th>
+                    <th class="th-title">TITLE &amp; ARTISTS</th>
+                    <th class="th-time">TIME</th>
+                    <th class="th-status">STATUS</th>
+                  </tr>
+                </thead>
+                <tbody id="track-table-body">
+                  <!-- Populated dynamically via JS -->
+                </tbody>
+              </table>
+            </div>
+
+            <!-- Sticky Bottom Options & Download Action Bar -->
+            <div class="coll-sticky-actions">
+              <div class="options-group">
+                <label class="custom-toggle">
+                  <input type="checkbox" id="opt-subfolder" checked>
+                  <span class="toggle-slider"></span>
+                  <span class="toggle-label">Save in album folder</span>
+                </label>
+
+                <label class="custom-toggle">
+                  <input type="checkbox" id="opt-zip">
+                  <span class="toggle-slider"></span>
+                  <span class="toggle-label">Also create ZIP</span>
+                </label>
+              </div>
+
+              <div class="action-btn-group">
+                <button id="btn-download-selected" class="pill-btn pill-violet pill-sticky" disabled>
+                  <span class="btn-icon">⬇</span>
+                  <span id="btn-download-selected-text">Download Selected (0)</span>
+                </button>
+              </div>
+            </div>
+
+          </div>
+
+        </div>
+      </section>
+
+    </main>
+
+    <!-- PERSISTENT BOTTOM BAR (Visible on both tabs) -->
+    <footer id="bottom-bar">
+
+      <!-- Thin Progress Line -->
+      <div id="progress-line-track">
+        <div id="progress-line-fill" style="width: 0%;"></div>
+      </div>
+
+      <div class="bottom-bar-content">
+        <!-- Row 1: Save To Folder Row -->
+        <div class="bottom-row folder-row">
+          <span class="folder-label">Save to:</span>
+          <div class="folder-input-wrap">
+            <input type="text" id="save-folder-input" readonly spellcheck="false">
+          </div>
+          <button id="browse-folder-btn" class="tool-btn">Browse…</button>
+          <button id="open-folder-btn" class="tool-btn">Open folder</button>
+        </div>
+
+        <!-- Row 2: Status & Actions Row -->
+        <div class="bottom-row status-action-row">
+          <div class="status-left">
+            <span id="status-text" class="status-message">Ready.</span>
+
+            <!-- Finished actions (Done: N songs, Open folder, Show ZIP) -->
+            <div id="finished-actions-group" class="finished-pill-group" style="display: none;">
+              <span id="finished-badge" class="finished-badge">Done: 0 songs</span>
+              <button id="finished-open-folder-btn" class="pill-btn pill-sm pill-outline">Open folder</button>
+              <button id="finished-show-zip-btn" class="pill-btn pill-sm pill-outline" style="display: none;">Show ZIP</button>
+            </div>
+          </div>
+
+          <div class="status-right">
+            <button id="cancel-download-btn" class="tool-btn danger" disabled>Cancel</button>
+            <button id="toggle-details-btn" class="tool-btn">Show details</button>
+          </div>
+        </div>
+
+        <!-- Row 3: Hidden Log Console (Expandable) -->
+        <div id="log-console-container" class="log-console" style="display: none;">
+          <div class="log-console-header">
+            <span class="log-header-title">ENGINE OUTPUT LOG</span>
+            <button id="clear-logs-btn" class="mini-tool-btn">Clear</button>
+          </div>
+          <div id="log-output-stream" class="log-stream"></div>
+        </div>
+      </div>
+
+    </footer>
+
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

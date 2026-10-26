@@ -1,0 +1,54 @@
+@font-face {
+  font-family: 'Plus Jakarta Sans';
+  font-weight: 400;
+  font-style: normal;
+  src: url('PlusJakartaSans-400.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'Plus Jakarta Sans';
+  font-weight: 500;
+  font-style: normal;
+  src: url('PlusJakartaSans-500.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'Plus Jakarta Sans';
+  font-weight: 600;
+  font-style: normal;
+  src: url('PlusJakartaSans-600.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'Plus Jakarta Sans';
+  font-weight: 700;
+  font-style: normal;
+  src: url('PlusJakartaSans-700.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'Syne';
+  font-weight: 700;
+  font-style: normal;
+  src: url('Syne-700.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'Syne';
+  font-weight: 800;
+  font-style: normal;
+  src: url('Syne-800.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'Unbounded';
+  font-weight: 700;
+  font-style: normal;
+  src: url('Unbounded-700.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'Unbounded';
+  font-weight: 800;
+  font-style: normal;
+  src: url('Unbounded-800.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'Unbounded';
+  font-weight: 900;
+  font-style: normal;
+  src: url('Unbounded-900.ttf') format('truetype');
+}
